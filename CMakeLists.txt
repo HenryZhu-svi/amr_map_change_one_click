@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(AMRMapManager VERSION 0.1.0 LANGUAGES CXX)
+project(AMRMapManager VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -17,6 +17,8 @@ qt_add_executable(amr-map-manager
     src/protocol/RbkProtocol.cpp
     src/network/RequestJob.h
     src/network/RequestJob.cpp
+    src/map/MapView.h
+    src/map/MapView.cpp
 )
 
 # Source files use project-relative includes such as

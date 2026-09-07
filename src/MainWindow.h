@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Robot.h"
+#include "map/MapView.h"
 #include "network/RequestJob.h"
 
 #include <QMainWindow>
@@ -13,6 +14,7 @@ class QJsonObject;
 class QAction;
 class QComboBox;
 class QToolBar;
+class QTabWidget;
 
 class MainWindow final : public QMainWindow {
     Q_OBJECT
@@ -25,12 +27,15 @@ private:
     void buildUi();
     void retranslateUi();
     QString tx(const char *chinese, const char *english) const;
+    QString localizedError(const QString &error) const;
     void loadRobots();
     void saveRobots() const;
     void addRobot();
     void removeSelected();
     void refreshSelected();
     void downloadMap();
+    void openMapFile();
+    void updateMapSummary();
     void chooseAndUpload(bool switchAfterUpload);
     void startBatch(const QByteArray &mapBytes, const QString &mapName,
                     bool switchAfterUpload);
@@ -54,12 +59,17 @@ private:
     QPlainTextEdit *m_log = nullptr;
     QLabel *m_batchLabel = nullptr;
     QLabel *m_languageLabel = nullptr;
+    QLabel *m_mapInfoLabel = nullptr;
     QToolBar *m_toolbar = nullptr;
+    QTabWidget *m_tabs = nullptr;
+    MapView *m_mapView = nullptr;
     QComboBox *m_languageCombo = nullptr;
     QAction *m_addAction = nullptr;
     QAction *m_removeAction = nullptr;
     QAction *m_refreshAction = nullptr;
     QAction *m_downloadAction = nullptr;
+    QAction *m_openMapAction = nullptr;
+    QAction *m_fitMapAction = nullptr;
     QAction *m_uploadAction = nullptr;
     QAction *m_uploadSwitchAction = nullptr;
     QQueue<int> m_pendingRows;
@@ -71,4 +81,6 @@ private:
     QString m_mapMd5;
     bool m_switchAfterUpload = false;
     bool m_english = false;
+    bool m_hasMapSummary = false;
+    MapSummary m_mapSummary;
 };

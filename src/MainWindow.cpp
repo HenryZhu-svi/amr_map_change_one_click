@@ -33,6 +33,7 @@
 #include <QStandardPaths>
 #include <QSpinBox>
 #include <QStatusBar>
+#include <QTabWidget>
 #include <QTableWidget>
 #include <QToolBar>
 #include <QVBoxLayout>
@@ -42,6 +43,7 @@ constexpr int MaxConcurrentRobots = 3;
 
 QString statusName(int status, bool english)
 {
+    if (status < 0) return english ? QStringLiteral("Unknown") : QStringLiteral("未知");
     switch (status) {
     case 0: return english ? QStringLiteral("Idle") : QStringLiteral("空闲");
     case 1: return english ? QStringLiteral("Waiting") : QStringLiteral("等待");
@@ -53,6 +55,29 @@ QString statusName(int status, bool english)
     default: return (english ? QStringLiteral("Unknown (%1)") : QStringLiteral("未知(%1)"))
                         .arg(status);
     }
+}
+
+QString knownResultText(const QString &text, bool english)
+{
+    static const QList<QPair<QString, QString>> values = {
+        {QStringLiteral("等待操作"), QStringLiteral("Waiting")},
+        {QStringLiteral("查询地图状态…"), QStringLiteral("Querying map status...")},
+        {QStringLiteral("状态已刷新"), QStringLiteral("Status refreshed")},
+        {QStringLiteral("下载当前地图…"), QStringLiteral("Downloading current map...")},
+        {QStringLiteral("等待预检"), QStringLiteral("Waiting for precheck")},
+        {QStringLiteral("检查导航状态…"), QStringLiteral("Checking navigation status...")},
+        {QStringLiteral("上传地图…"), QStringLiteral("Uploading map...")},
+        {QStringLiteral("校验机器人 MD5…"), QStringLiteral("Verifying robot MD5...")},
+        {QStringLiteral("切换地图…"), QStringLiteral("Switching map...")},
+        {QStringLiteral("验证当前地图…"), QStringLiteral("Verifying current map...")},
+        {QStringLiteral("上传及 MD5 校验成功"), QStringLiteral("Upload and MD5 verification succeeded")},
+        {QStringLiteral("上传、校验和切换成功"), QStringLiteral("Upload, verification and switch succeeded")},
+        {QStringLiteral("当前地图验证不一致"), QStringLiteral("Current map verification mismatch")},
+    };
+    for (const auto &value : values) {
+        if (text == value.first || text == value.second) return english ? value.second : value.first;
+    }
+    return text;
 }
 
 QByteArray compactJson(const QJsonObject &object)
@@ -80,6 +105,8 @@ void MainWindow::buildUi()
     m_toolbar->addSeparator();
     m_refreshAction = m_toolbar->addAction(QString(), this, &MainWindow::refreshSelected);
     m_downloadAction = m_toolbar->addAction(QString(), this, &MainWindow::downloadMap);
+    m_openMapAction = m_toolbar->addAction(QString(), this, &MainWindow::openMapFile);
+    m_fitMapAction = m_toolbar->addAction(QString(), this, [this] { m_mapView->fitMap(); });
     m_toolbar->addSeparator();
     m_uploadAction = m_toolbar->addAction(QString(), this, [this] { chooseAndUpload(false); });
     m_uploadSwitchAction = m_toolbar->addAction(QString(), this,
@@ -113,11 +140,22 @@ void MainWindow::buildUi()
     m_log = new QPlainTextEdit(central);
     m_log->setReadOnly(true);
     m_log->setMaximumBlockCount(1500);
-    m_log->setMaximumHeight(190);
 
-    layout->addWidget(m_table, 1);
+    m_tabs = new QTabWidget(central);
+    auto *mapPage = new QWidget(m_tabs);
+    auto *mapLayout = new QVBoxLayout(mapPage);
+    mapLayout->setContentsMargins(4, 4, 4, 4);
+    m_mapInfoLabel = new QLabel(mapPage);
+    m_mapView = new MapView(mapPage);
+    m_mapView->setMinimumHeight(260);
+    mapLayout->addWidget(m_mapInfoLabel);
+    mapLayout->addWidget(m_mapView, 1);
+    m_tabs->addTab(mapPage, QString());
+    m_tabs->addTab(m_log, QString());
+
+    layout->addWidget(m_table, 3);
     layout->addWidget(m_batchLabel);
-    layout->addWidget(m_log);
+    layout->addWidget(m_tabs, 2);
     setCentralWidget(central);
     retranslateUi();
 }
@@ -127,14 +165,27 @@ QString MainWindow::tx(const char *chinese, const char *english) const
     return QString::fromUtf8(m_english ? english : chinese);
 }
 
+QString MainWindow::localizedError(const QString &error) const
+{
+    if (!m_english) return error;
+    if (error == QStringLiteral("协议头不足 16 字节")) return QStringLiteral("Protocol header is shorter than 16 bytes");
+    if (error == QStringLiteral("协议魔数不是 5A 01")) return QStringLiteral("Protocol magic is not 5A 01");
+    if (error == QStringLiteral("响应序列号不匹配")) return QStringLiteral("Response sequence does not match");
+    if (error == QStringLiteral("响应编号不匹配")) return QStringLiteral("Response command does not match");
+    if (error == QStringLiteral("连接或响应超时")) return QStringLiteral("Connection or response timed out");
+    return error;
+}
+
 void MainWindow::retranslateUi()
 {
-    setWindowTitle(tx("AMR 地图批量管理器 0.1", "AMR Map Manager 0.1"));
+    setWindowTitle(tx("AMR 地图批量管理器 0.2", "AMR Map Manager 0.2"));
     m_toolbar->setWindowTitle(tx("操作", "Actions"));
     m_addAction->setText(tx("添加机器人", "Add robot"));
     m_removeAction->setText(tx("删除所选", "Remove selected"));
     m_refreshAction->setText(tx("刷新状态", "Refresh status"));
     m_downloadAction->setText(tx("下载当前地图", "Download current map"));
+    m_openMapAction->setText(tx("打开地图", "Open map"));
+    m_fitMapAction->setText(tx("适应窗口", "Fit map"));
     m_uploadAction->setText(tx("仅上传", "Upload only"));
     m_uploadSwitchAction->setText(tx("上传、验证并切换", "Upload, verify and switch"));
     m_languageLabel->setText(tx("语言：", "Language: "));
@@ -145,6 +196,9 @@ void MainWindow::retranslateUi()
         m_batchLabel->setText(tx("就绪。批量操作默认并发 3 台，繁忙机器人会跳过。",
                                  "Ready. Up to 3 robots run concurrently; busy robots are skipped."));
     m_log->setPlaceholderText(tx("操作日志", "Operation log"));
+    m_tabs->setTabText(0, tx("地图预览", "Map preview"));
+    m_tabs->setTabText(1, tx("操作日志", "Operation log"));
+    updateMapSummary();
     statusBar()->showMessage(tx("真实切图前，请先在单台测试机器人验证端口和协议版本。",
                                 "Verify ports and protocol version on one test robot before a real map switch."));
     for (int row = 0; row < m_table->rowCount(); ++row) {
@@ -158,6 +212,11 @@ void MainWindow::retranslateUi()
         }
         if (auto *task = m_table->item(row, Task); task && task->data(Qt::UserRole).isValid())
             setCell(row, Task, statusName(task->data(Qt::UserRole).toInt(), m_english));
+        if (auto *result = m_table->item(row, Result);
+            result && result->data(Qt::UserRole).toInt() == 1) {
+            setCell(row, Result, tx("等待操作", "Waiting"));
+            m_table->item(row, Result)->setData(Qt::UserRole, 1);
+        } else if (result) setCell(row, Result, knownResultText(result->text(), m_english));
     }
 }
 
@@ -181,9 +240,11 @@ void MainWindow::loadRobots()
         setCell(row, Online, tx("未检查", "Not checked"));
         m_table->item(row, Online)->setData(Qt::UserRole, 0);
         setCell(row, Task, tx("未知", "Unknown"));
+        m_table->item(row, Task)->setData(Qt::UserRole, -1);
         setCell(row, CurrentMap, QStringLiteral("-"));
         setCell(row, Md5, QStringLiteral("-"));
         setCell(row, Result, tx("等待操作", "Waiting"));
+        m_table->item(row, Result)->setData(Qt::UserRole, 1);
     }
     settings.endArray();
 }
@@ -249,9 +310,11 @@ void MainWindow::addRobot()
     setCell(row, Online, tx("未检查", "Not checked"));
     m_table->item(row, Online)->setData(Qt::UserRole, 0);
     setCell(row, Task, tx("未知", "Unknown"));
+    m_table->item(row, Task)->setData(Qt::UserRole, -1);
     setCell(row, CurrentMap, QStringLiteral("-"));
     setCell(row, Md5, QStringLiteral("-"));
     setCell(row, Result, tx("等待操作", "Waiting"));
+    m_table->item(row, Result)->setData(Qt::UserRole, 1);
     saveRobots();
 }
 
@@ -281,7 +344,7 @@ void MainWindow::refreshSelected()
             if (!result.ok) {
                 setCell(row, Online, tx("离线", "Offline"));
                 m_table->item(row, Online)->setData(Qt::UserRole, 2);
-                setCell(row, Result, result.error);
+                setCell(row, Result, localizedError(result.error));
                 return;
             }
             QJsonObject json;
@@ -332,7 +395,7 @@ void MainWindow::downloadMap()
     query(row, robot.configPort, RbkProtocol::DownloadMap,
           compactJson({{QStringLiteral("map_name"), mapName}}),
           [this, row, fileName](RequestResult result) {
-        if (!result.ok) { setCell(row, Result, result.error); return; }
+        if (!result.ok) { setCell(row, Result, localizedError(result.error)); return; }
         QJsonObject possibleError;
         QString ignored;
         if (parseJson(result.payload, &possibleError, &ignored)
@@ -353,11 +416,66 @@ void MainWindow::downloadMap()
             result.payload, QCryptographicHash::Md5).toHex());
         setCell(row, Result, tx("下载完成，本地 MD5 %1", "Download complete. Local MD5: %1").arg(md5));
         log(tx("地图已保存：%1", "Map saved to: %1").arg(fileName));
+        MapSummary summary;
+        QString previewError;
+        if (m_mapView->loadBytes(result.payload, &summary, &previewError)) {
+            m_mapSummary = summary;
+            m_hasMapSummary = true;
+            updateMapSummary();
+            m_tabs->setCurrentIndex(0);
+        } else {
+            log(tx("地图已下载，但预览解析失败：%1",
+                   "The map was downloaded, but preview parsing failed: %1").arg(previewError));
+        }
         QMessageBox::information(this, tx("下载完成", "Download complete"),
             tx("当前地图已保存到：\n%1\n\n如需改名，请在文件管理器中操作。",
                "The current map was saved to:\n%1\n\nRename it later in your file manager if needed.")
                 .arg(fileName));
     }, 60000);
+}
+
+void MainWindow::openMapFile()
+{
+    const QString fileName = QFileDialog::getOpenFileName(this,
+        tx("打开地图", "Open map"),
+        QStandardPaths::writableLocation(QStandardPaths::DownloadLocation),
+        tx("SEER 地图 (*.smap);;JSON 文件 (*.json);;所有文件 (*)",
+           "SEER maps (*.smap);;JSON files (*.json);;All files (*)"));
+    if (fileName.isEmpty()) return;
+
+    MapSummary summary;
+    QString error;
+    if (!m_mapView->loadFile(fileName, &summary, &error)) {
+        QMessageBox::critical(this, tx("无法打开地图", "Cannot open map"),
+                              tx("地图解析失败：%1", "Map parsing failed: %1").arg(error));
+        return;
+    }
+    m_mapSummary = summary;
+    m_hasMapSummary = true;
+    updateMapSummary();
+    m_tabs->setCurrentIndex(0);
+    log(tx("已打开地图：%1", "Opened map: %1").arg(fileName));
+}
+
+void MainWindow::updateMapSummary()
+{
+    if (!m_mapInfoLabel) return;
+    if (!m_hasMapSummary) {
+        m_mapInfoLabel->setText(tx("尚未打开地图。可点击“打开地图”，或下载机器人当前地图后自动预览。",
+                                   "No map is open. Click Open map, or download a robot's current map for automatic preview."));
+        return;
+    }
+    m_mapInfoLabel->setText(
+        tx("地图：%1    类型：%2    版本：%3    分辨率：%4 m    扫描点：%5    站点：%6    路径：%7    区域：%8",
+           "Map: %1    Type: %2    Version: %3    Resolution: %4 m    Scan points: %5    Stations: %6    Paths: %7    Areas: %8")
+            .arg(m_mapSummary.name.isEmpty() ? QStringLiteral("-") : m_mapSummary.name,
+                 m_mapSummary.type.isEmpty() ? QStringLiteral("-") : m_mapSummary.type,
+                 m_mapSummary.version.isEmpty() ? QStringLiteral("-") : m_mapSummary.version)
+            .arg(m_mapSummary.resolution, 0, 'g', 6)
+            .arg(m_mapSummary.normalPointCount)
+            .arg(m_mapSummary.stationCount)
+            .arg(m_mapSummary.pathCount)
+            .arg(m_mapSummary.areaCount));
 }
 
 void MainWindow::chooseAndUpload(bool switchAfterUpload)
@@ -454,7 +572,7 @@ void MainWindow::runRobotOperation(int row)
     query(row, robot.statusPort, RbkProtocol::QueryTask,
           compactJson({{QStringLiteral("simple"), true}}),
           [this, row](RequestResult result) {
-        if (!result.ok) { finishRobot(row, tx("预检失败：%1", "Precheck failed: %1").arg(result.error), false); return; }
+        if (!result.ok) { finishRobot(row, tx("预检失败：%1", "Precheck failed: %1").arg(localizedError(result.error)), false); return; }
         QJsonObject json;
         QString error;
         if (!parseJson(result.payload, &json, &error) || !responseSucceeded(json, &error)) {
@@ -478,7 +596,7 @@ void MainWindow::uploadRobot(int row)
     const Robot robot = robotAt(row);
     query(row, robot.configPort, RbkProtocol::UploadMap, m_mapBytes,
           [this, row](RequestResult result) {
-        if (!result.ok) { finishRobot(row, tx("上传失败：%1", "Upload failed: %1").arg(result.error), false); return; }
+        if (!result.ok) { finishRobot(row, tx("上传失败：%1", "Upload failed: %1").arg(localizedError(result.error)), false); return; }
         QJsonObject json;
         QString error;
         if (!parseJson(result.payload, &json, &error) || !responseSucceeded(json, &error)) {
@@ -495,7 +613,7 @@ void MainWindow::verifyUpload(int row)
     query(row, robot.statusPort, RbkProtocol::QueryMapMd5,
           compactJson({{QStringLiteral("map_names"), QJsonArray{m_mapName + QStringLiteral(".smap")}}}),
           [this, row](RequestResult result) {
-        if (!result.ok) { finishRobot(row, tx("MD5 查询失败：%1", "MD5 query failed: %1").arg(result.error), false); return; }
+        if (!result.ok) { finishRobot(row, tx("MD5 查询失败：%1", "MD5 query failed: %1").arg(localizedError(result.error)), false); return; }
         QJsonObject json;
         QString error;
         if (!parseJson(result.payload, &json, &error) || !responseSucceeded(json, &error)) {
@@ -528,7 +646,7 @@ void MainWindow::switchRobot(int row)
     query(row, robot.controlPort, RbkProtocol::LoadMap,
           compactJson({{QStringLiteral("map_name"), m_mapName}}),
           [this, row](RequestResult result) {
-        if (!result.ok) { finishRobot(row, tx("切换失败：%1", "Map switch failed: %1").arg(result.error), false); return; }
+        if (!result.ok) { finishRobot(row, tx("切换失败：%1", "Map switch failed: %1").arg(localizedError(result.error)), false); return; }
         QJsonObject json;
         QString error;
         if (!parseJson(result.payload, &json, &error) || !responseSucceeded(json, &error)) {
@@ -544,7 +662,7 @@ void MainWindow::verifyCurrentMap(int row)
     const Robot robot = robotAt(row);
     query(row, robot.statusPort, RbkProtocol::QueryMap, {},
           [this, row](RequestResult result) {
-        if (!result.ok) { finishRobot(row, tx("切换后验证失败：%1", "Post-switch verification failed: %1").arg(result.error), false); return; }
+        if (!result.ok) { finishRobot(row, tx("切换后验证失败：%1", "Post-switch verification failed: %1").arg(localizedError(result.error)), false); return; }
         QJsonObject json;
         QString error;
         if (!parseJson(result.payload, &json, &error) || !responseSucceeded(json, &error)) {
@@ -611,6 +729,7 @@ void MainWindow::setCell(int row, Column column, const QString &text)
         m_table->setItem(row, column, item);
     }
     item->setText(text);
+    if (column == Result) item->setData(Qt::UserRole, QVariant());
     item->setForeground(palette().color(QPalette::Text));
 }
 
