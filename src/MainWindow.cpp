@@ -513,12 +513,23 @@ void MainWindow::chooseAndUpload(bool switchAfterUpload)
                "The 2D map is not a valid JSON object: %1").arg(parseError.errorString()));
         return;
     }
-    QString mapName = QFileInfo(fileName).completeBaseName();
-    static const QRegularExpression valid(QStringLiteral("^[0-9A-Za-z_-]+$"));
-    if (!valid.match(mapName).hasMatch()) {
-        QMessageBox::warning(this, tx("地图文件名无效", "Invalid map filename"),
-            tx("文件名只能使用字母、数字、下划线和连字符。",
-               "The filename may contain only letters, digits, underscores and hyphens."));
+    const QJsonObject root = document.object();
+    const QJsonObject header = root.value(QStringLiteral("header")).toObject();
+    QString mapName = header.value(QStringLiteral("mapName")).toString().trimmed();
+    if (mapName.isEmpty()) {
+        mapName = header.value(QStringLiteral("map_name")).toString().trimmed();
+    }
+    if (mapName.isEmpty()) {
+        mapName = QFileInfo(fileName).completeBaseName().trimmed();
+    }
+    while (mapName.endsWith(QStringLiteral(".smap"), Qt::CaseInsensitive)) {
+        mapName.chop(5);
+        mapName = mapName.trimmed();
+    }
+    if (mapName.isEmpty()) {
+        QMessageBox::warning(this, tx("地图名称缺失", "Missing map name"),
+            tx("无法从地图内容或文件名中确定地图名称。",
+               "The map name could not be determined from the map content or filename."));
         return;
     }
     const QString md5 = QString::fromLatin1(QCryptographicHash::hash(bytes,
