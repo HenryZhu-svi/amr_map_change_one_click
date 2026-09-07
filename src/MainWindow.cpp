@@ -33,10 +33,12 @@
 #include <QSettings>
 #include <QSizePolicy>
 #include <QStandardPaths>
+#include <QStringList>
 #include <QSpinBox>
 #include <QStatusBar>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QTimer>
 #include <QToolBar>
 #include <QVBoxLayout>
 
@@ -558,6 +560,7 @@ void MainWindow::startBatch(const QByteArray &mapBytes, const QString &mapName,
     m_mapName = mapName;
     m_mapMd5 = QString::fromLatin1(QCryptographicHash::hash(mapBytes,
                                                             QCryptographicHash::Md5).toHex());
+    m_remoteMapNames.clear();
     m_switchAfterUpload = switchAfterUpload;
     const auto rows = selectedRows();
     for (const int row : rows) {
@@ -622,40 +625,128 @@ void MainWindow::uploadRobot(int row)
         if (!parseJson(result.payload, &json, &error) || !responseSucceeded(json, &error)) {
             finishRobot(row, tx("上传失败：%1", "Upload failed: %1").arg(error), false); return;
         }
-        verifyUpload(row);
+        setCell(row, Result, tx("等待机器人保存地图…", "Waiting for the robot to store the map..."));
+        QTimer::singleShot(1500, this, [this, row] { verifyUpload(row); });
     }, 120000);
 }
 
-void MainWindow::verifyUpload(int row)
+void MainWindow::verifyUpload(int row, int attempt)
 {
-    setCell(row, Result, tx("校验机器人 MD5…", "Verifying robot MD5..."));
+    constexpr int MaxAttempts = 15;
+    setCell(row, Result, tx("读取机器人地图列表…", "Reading the robot map list..."));
     const Robot robot = robotAt(row);
-    query(row, robot.statusPort, RbkProtocol::QueryMapMd5,
-          compactJson({{QStringLiteral("map_names"), QJsonArray{m_mapName + QStringLiteral(".smap")}}}),
-          [this, row](RequestResult result) {
-        if (!result.ok) { finishRobot(row, tx("MD5 查询失败：%1", "MD5 query failed: %1").arg(localizedError(result.error)), false); return; }
+    query(row, robot.statusPort, RbkProtocol::QueryMap, {},
+          [this, row, attempt](RequestResult result) {
+        if (!result.ok) {
+            finishRobot(row, tx("地图列表查询失败：%1", "Map list query failed: %1")
+                                 .arg(localizedError(result.error)), false);
+            return;
+        }
         QJsonObject json;
         QString error;
         if (!parseJson(result.payload, &json, &error) || !responseSucceeded(json, &error)) {
-            finishRobot(row, tx("MD5 查询失败：%1", "MD5 query failed: %1").arg(error), false); return;
-        }
-        QString remoteMd5;
-        const auto info = json.value(QStringLiteral("map_info")).toArray();
-        for (const auto &value : info) {
-            const auto item = value.toObject();
-            if (item.value(QStringLiteral("name")).toString() == m_mapName + QStringLiteral(".smap")) {
-                remoteMd5 = item.value(QStringLiteral("md5")).toString();
-                break;
-            }
-        }
-        if (remoteMd5.compare(m_mapMd5, Qt::CaseInsensitive) != 0) {
-            finishRobot(row, tx("MD5 不一致：机器人 %1，本地 %2",
-                                "MD5 mismatch: robot %1, local %2")
-                        .arg(remoteMd5.isEmpty() ? tx("无返回", "no value") : remoteMd5, m_mapMd5), false);
+            finishRobot(row, tx("地图列表查询失败：%1", "Map list query failed: %1")
+                                 .arg(error), false);
             return;
         }
-        if (m_switchAfterUpload) switchRobot(row);
-        else finishRobot(row, tx("上传及 MD5 校验成功", "Upload and MD5 verification succeeded"), true);
+
+        QStringList storedFiles;
+        const QJsonArray fileInfo = json.value(QStringLiteral("map_files_info")).toArray();
+        for (const QJsonValue &value : fileInfo) {
+            const QString name = value.toObject().value(QStringLiteral("name")).toString().trimmed();
+            if (!name.isEmpty()) storedFiles.append(name);
+        }
+        if (storedFiles.isEmpty()) {
+            const QJsonArray maps = json.value(QStringLiteral("maps")).toArray();
+            for (const QJsonValue &value : maps) {
+                const QString name = value.toString().trimmed();
+                if (!name.isEmpty()) storedFiles.append(name + QStringLiteral(".smap"));
+            }
+        }
+        storedFiles.removeDuplicates();
+
+        if (storedFiles.isEmpty()) {
+            if (attempt + 1 >= MaxAttempts) {
+                finishRobot(row,
+                    tx("上传返回成功，但机器人地图列表为空。",
+                       "Upload returned success, but the robot map list is empty."), false);
+                return;
+            }
+            setCell(row, Result,
+                    tx("等待机器人更新地图列表（%1/%2）…",
+                       "Waiting for the robot map list to update (%1/%2)...")
+                        .arg(attempt + 1)
+                        .arg(MaxAttempts));
+            QTimer::singleShot(2000, this,
+                               [this, row, attempt] { verifyUpload(row, attempt + 1); });
+            return;
+        }
+
+        QJsonArray requestedNames;
+        for (const QString &name : storedFiles) requestedNames.append(name);
+        setCell(row, Result, tx("按 MD5 查找已上传地图…", "Finding the uploaded map by MD5..."));
+        const Robot currentRobot = robotAt(row);
+        query(row, currentRobot.statusPort, RbkProtocol::QueryMapMd5,
+              compactJson({{QStringLiteral("map_names"), requestedNames}}),
+              [this, row, attempt, storedFiles](RequestResult md5Result) {
+            if (!md5Result.ok) {
+                finishRobot(row, tx("MD5 查询失败：%1", "MD5 query failed: %1")
+                                     .arg(localizedError(md5Result.error)), false);
+                return;
+            }
+            QJsonObject md5Json;
+            QString md5Error;
+            if (!parseJson(md5Result.payload, &md5Json, &md5Error)
+                || !responseSucceeded(md5Json, &md5Error)) {
+                finishRobot(row, tx("MD5 查询失败：%1", "MD5 query failed: %1")
+                                     .arg(md5Error), false);
+                return;
+            }
+
+            QString remoteFileName;
+            const QJsonArray info = md5Json.value(QStringLiteral("map_info")).toArray();
+            for (const QJsonValue &value : info) {
+                const QJsonObject item = value.toObject();
+                if (item.value(QStringLiteral("md5")).toString().compare(
+                        m_mapMd5, Qt::CaseInsensitive) == 0) {
+                    remoteFileName = item.value(QStringLiteral("name")).toString().trimmed();
+                    break;
+                }
+            }
+
+            if (remoteFileName.isEmpty()) {
+                if (attempt + 1 < MaxAttempts) {
+                    setCell(row, Result,
+                            tx("等待上传地图出现在存储列表（%1/%2）…",
+                               "Waiting for the uploaded map to appear (%1/%2)...")
+                                .arg(attempt + 1)
+                                .arg(MaxAttempts));
+                    QTimer::singleShot(2000, this,
+                        [this, row, attempt] { verifyUpload(row, attempt + 1); });
+                    return;
+                }
+                log(tx("机器人当前存储地图：%1", "Maps currently stored on the robot: %1")
+                        .arg(storedFiles.join(QStringLiteral(", "))));
+                finishRobot(row,
+                    tx("上传返回成功，但存储列表中没有与本地 MD5 相同的地图。",
+                       "Upload returned success, but no stored map matches the local MD5."), false);
+                return;
+            }
+
+            QString remoteMapName = remoteFileName;
+            if (remoteMapName.endsWith(QStringLiteral(".smap"), Qt::CaseInsensitive)) {
+                remoteMapName.chop(5);
+            }
+            m_remoteMapNames.insert(row, remoteMapName);
+            log(tx("已通过 MD5 找到机器人地图：%1",
+                   "Found the robot map by MD5: %1").arg(remoteFileName));
+
+            if (m_switchAfterUpload) switchRobot(row);
+            else finishRobot(row,
+                tx("上传及 MD5 校验成功（机器人名称：%1）",
+                   "Upload and MD5 verification succeeded (robot name: %1)")
+                    .arg(remoteFileName), true);
+        });
     });
 }
 
@@ -663,8 +754,9 @@ void MainWindow::switchRobot(int row)
 {
     setCell(row, Result, tx("切换地图…", "Switching map..."));
     const Robot robot = robotAt(row);
+    const QString remoteMapName = m_remoteMapNames.value(row, m_mapName);
     query(row, robot.controlPort, RbkProtocol::LoadMap,
-          compactJson({{QStringLiteral("map_name"), m_mapName}}),
+          compactJson({{QStringLiteral("map_name"), remoteMapName}}),
           [this, row](RequestResult result) {
         if (!result.ok) { finishRobot(row, tx("切换失败：%1", "Map switch failed: %1").arg(localizedError(result.error)), false); return; }
         QJsonObject json;
@@ -692,7 +784,9 @@ void MainWindow::verifyCurrentMap(int row)
         const QString md5 = json.value(QStringLiteral("current_map_md5")).toString();
         setCell(row, CurrentMap, current);
         setCell(row, Md5, md5);
-        const bool mapMatches = current == m_mapName || current == m_mapName + QStringLiteral(".smap");
+        const QString remoteMapName = m_remoteMapNames.value(row, m_mapName);
+        const bool mapMatches = current.compare(remoteMapName, Qt::CaseInsensitive) == 0
+            || current.compare(remoteMapName + QStringLiteral(".smap"), Qt::CaseInsensitive) == 0;
         if (!mapMatches || md5.compare(m_mapMd5, Qt::CaseInsensitive) != 0) {
             finishRobot(row, tx("当前地图验证不一致", "Current map verification mismatch"), false);
             return;

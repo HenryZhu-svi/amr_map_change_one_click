@@ -5,6 +5,7 @@
 #include "network/RequestJob.h"
 
 #include <QMainWindow>
+#include <QHash>
 #include <QQueue>
 
 class QLabel;
@@ -42,7 +43,7 @@ private:
     void launchNext();
     void runRobotOperation(int row);
     void uploadRobot(int row);
-    void verifyUpload(int row);
+    void verifyUpload(int row, int attempt = 0);
     void switchRobot(int row);
     void verifyCurrentMap(int row);
     void finishRobot(int row, const QString &result, bool success);
@@ -80,6 +81,7 @@ private:
     QByteArray m_mapBytes;
     QString m_mapName;
     QString m_mapMd5;
+    QHash<int, QString> m_remoteMapNames;
     bool m_switchAfterUpload = false;
     bool m_english = false;
     bool m_hasMapSummary = false;

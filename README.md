@@ -32,7 +32,9 @@ The application is currently at version **0.2** and is designed for both Ubuntu 
 - Query each robot's navigation state before making changes.
 - Skip robots in `WAITING`, `RUNNING`, or `SUSPENDED` state.
 - Upload a map without switching it.
-- Query the uploaded map's remote MD5 and compare it with the local file.
+- Read each robot's actual stored-map list after upload, query those maps, and
+  locate the uploaded map by matching its remote MD5 to the local file.
+- Use the robot's actual stored filename for subsequent map switching.
 - Optionally switch to the uploaded map after MD5 verification.
 - Query `current_map` and `current_map_md5` after switching.
 - Continue processing other robots when one robot fails.
