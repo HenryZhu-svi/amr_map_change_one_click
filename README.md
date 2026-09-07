@@ -149,6 +149,14 @@ Run the packaging script from a regular PowerShell terminal after installing Vis
   -Version "0.2.0"
 ```
 
+When Qt is installed under `C:\Qt` and the Visual C++ Redistributable is
+available in the Visual Studio installation, both paths are detected
+automatically:
+
+```powershell
+.\scripts\package-windows.ps1 -Version "0.2.0"
+```
+
 Outputs:
 
 ```text

@@ -1,9 +1,7 @@
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$QtRoot,
+    [string]$QtRoot = "",
 
-    [Parameter(Mandatory = $true)]
-    [string]$VCRedistPath,
+    [string]$VCRedistPath = "",
 
     [string]$Version = "0.2.0",
     [string]$InnoSetupPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
@@ -14,6 +12,39 @@ $projectDir = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $buildDir = Join-Path $projectDir "build\package-windows"
 $stageDir = Join-Path $projectDir "dist\windows\stage"
 $outputDir = Join-Path $projectDir "dist\windows"
+
+if (-not $QtRoot) {
+    $QtRoot = Get-ChildItem -Path "C:\Qt\*\msvc2022_64" -Directory -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "bin\windeployqt.exe") } |
+        Sort-Object FullName -Descending |
+        Select-Object -First 1 -ExpandProperty FullName
+}
+
+if (-not $VCRedistPath) {
+    $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (Test-Path -LiteralPath $vswhere) {
+        $vsRoot = & $vswhere -latest -products * -property installationPath
+        if ($vsRoot) {
+            $VCRedistPath = Get-ChildItem -Path (Join-Path $vsRoot "VC\Redist\MSVC") `
+                -Recurse -Filter vc_redist.x64.exe -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -First 1 -ExpandProperty FullName
+        }
+    }
+}
+
+if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+    throw "CMake was not found. Install CMake and reopen PowerShell before packaging."
+}
+
+if (-not $QtRoot) {
+    throw "Qt MSVC 2022 64-bit was not found. Install it under C:\Qt, or pass -QtRoot with its actual directory."
+}
+
+if (-not $VCRedistPath) {
+    throw "VC_redist.x64.exe was not found. Install the Visual Studio 2022 C++ workload, or pass -VCRedistPath with the downloaded file."
+}
+
 $qtDeploy = Join-Path $QtRoot "bin\windeployqt.exe"
 $appExe = Join-Path $buildDir "Release\amr-map-manager.exe"
 
