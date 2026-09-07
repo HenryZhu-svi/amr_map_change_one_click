@@ -1,0 +1,8 @@
+<RCC>
+  <qresource prefix="/branding">
+    <file alias="svi-logo.svg">logo/svi_logo.svg</file>
+    <file alias="svi-logo-32.png">assets/icons/svi-logo-32.png</file>
+    <file alias="svi-logo-64.png">assets/icons/svi-logo-64.png</file>
+    <file alias="svi-logo-128.png">assets/icons/svi-logo-128.png</file>
+  </qresource>
+</RCC>

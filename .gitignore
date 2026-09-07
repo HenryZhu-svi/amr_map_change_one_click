@@ -10,3 +10,5 @@
 *.log
 *.pdf
 /smap-master/
+/dist/
+*.deb

@@ -4,6 +4,7 @@ AMR Map Manager is a Qt 6 desktop application for maintaining a manually configu
 
 The application is currently at version **0.2** and is designed for both Ubuntu and Windows.
 
+
 ## Features
 
 ### Robot management
@@ -110,6 +111,61 @@ Install Qt 6 with the MSVC component, Visual Studio C++ Build Tools, CMake, and 
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 .\build\amr-map-manager.exe
+```
+
+## Create release packages
+
+### Ubuntu DEB
+
+Install the packaging dependencies, then run the provided script on Ubuntu 22.04 x64:
+
+```bash
+sudo apt update
+sudo apt install build-essential cmake ninja-build qt6-base-dev dpkg-dev
+bash scripts/package-ubuntu.sh
+```
+
+Output:
+
+```text
+dist/ubuntu/amr-map-manager_0.2.0_amd64.deb
+```
+
+Install and remove it with:
+
+```bash
+sudo apt install ./dist/ubuntu/amr-map-manager_0.2.0_amd64.deb
+sudo apt remove amr-map-manager
+```
+
+### Windows installer
+
+Run the packaging script from a regular PowerShell terminal after installing Visual Studio 2022 Build Tools, Qt 6 MSVC x64, CMake, and Inno Setup 6. Pass the Microsoft Visual C++ x64 Redistributable downloaded from Microsoft:
+
+```powershell
+.\scripts\package-windows.ps1 `
+  -QtRoot "C:\Qt\6.8.3\msvc2022_64" `
+  -VCRedistPath "C:\Installers\VC_redist.x64.exe" `
+  -Version "0.2.0"
+```
+
+Outputs:
+
+```text
+dist/windows/AMRMapManager-0.2.0-win64-setup.exe
+dist/windows/AMRMapManager-0.2.0-win64-portable.zip
+```
+
+The installer deploys the required Microsoft Visual C++ Runtime. The portable
+archive requires that runtime to already be installed on the target computer.
+
+### GitHub Actions
+
+The `Build release packages` workflow can be started manually. It also runs when a version tag is pushed:
+
+```bash
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 ## Basic workflow

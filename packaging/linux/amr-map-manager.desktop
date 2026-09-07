@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=AMR Map Manager
+Name[zh_CN]=AMR 地图批量管理器
+Comment=Manage and preview SEER AMR maps
+Comment[zh_CN]=管理和预览 SEER AMR 地图
+Exec=amr-map-manager
+Icon=amr-map-manager
+Terminal=false
+Categories=Utility;Engineering;
+StartupNotify=true

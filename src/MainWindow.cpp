@@ -18,6 +18,7 @@
 #include <QFormLayout>
 #include <QHeaderView>
 #include <QHostAddress>
+#include <QIcon>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -25,6 +26,7 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPlainTextEdit>
+#include <QPixmap>
 #include <QPalette>
 #include <QPushButton>
 #include <QRegularExpression>
@@ -100,6 +102,13 @@ void MainWindow::buildUi()
 
     m_toolbar = addToolBar(QString());
     m_toolbar->setMovable(false);
+    m_logoLabel = new QLabel(m_toolbar);
+    m_logoLabel->setFixedSize(58, 44);
+    m_logoLabel->setContentsMargins(4, 2, 8, 2);
+    m_logoLabel->setPixmap(QPixmap(QStringLiteral(":/branding/svi-logo-128.png"))
+                               .scaled(46, 38, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    m_toolbar->addWidget(m_logoLabel);
+    setWindowIcon(QIcon(QStringLiteral(":/branding/svi-logo-128.png")));
     m_addAction = m_toolbar->addAction(QString(), this, &MainWindow::addRobot);
     m_removeAction = m_toolbar->addAction(QString(), this, &MainWindow::removeSelected);
     m_toolbar->addSeparator();

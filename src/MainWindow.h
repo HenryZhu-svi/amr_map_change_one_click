@@ -58,6 +58,7 @@ private:
     QTableWidget *m_table = nullptr;
     QPlainTextEdit *m_log = nullptr;
     QLabel *m_batchLabel = nullptr;
+    QLabel *m_logoLabel = nullptr;
     QLabel *m_languageLabel = nullptr;
     QLabel *m_mapInfoLabel = nullptr;
     QToolBar *m_toolbar = nullptr;
