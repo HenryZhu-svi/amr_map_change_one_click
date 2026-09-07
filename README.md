@@ -121,7 +121,8 @@ Install the packaging dependencies, then run the provided script on Ubuntu 22.04
 
 ```bash
 sudo apt update
-sudo apt install build-essential cmake ninja-build qt6-base-dev dpkg-dev
+sudo apt install build-essential cmake ninja-build qt6-base-dev dpkg-dev \
+  libgl1-mesa-dev libglx-dev libopengl-dev
 bash scripts/package-ubuntu.sh
 ```
 
