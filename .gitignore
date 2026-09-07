@@ -1,0 +1,11 @@
+/build*/
+/.qt/
+/.idea/
+/.vscode/
+*.user
+*.pcap
+*.pcapng
+*.smap
+*.zip
+*.log
+*.pdf
