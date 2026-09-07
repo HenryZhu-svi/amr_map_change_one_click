@@ -1,58 +1,163 @@
-# AMR 地图批量管理器
+# AMR Map Manager
 
-Qt 6 桌面应用，用于手动维护 AMR、查询/下载地图，以及向多台机器人上传并切换 2D 地图。
+AMR Map Manager is a Qt 6 desktop application for maintaining a manually configured fleet of SEER-compatible AMRs, downloading and previewing 2D maps, and safely uploading and switching maps across multiple robots.
 
-## 当前功能
+The application is currently at version **0.2** and is designed for both Ubuntu and Windows.
 
-- 手动添加、删除并持久保存机器人 IP
-- 查询当前地图和 MD5（1300）
-- 查询导航状态并跳过繁忙机器人（1020）
-- 直接下载所选机器人的当前地图到系统“下载”目录，并保留原始字节（4011）
-- 上传地图（4010）
-- 上传后查询 MD5（1302）
-- 可选切换已上传地图（2022）
-- 切换后重新查询当前地图和 MD5
-- 最多同时处理 3 台机器人
-- 中文/English 运行时切换，并记住用户选择
-- 打开并预览 SEER 2D `.smap` 地图
-- 显示扫描点、普通线、站点、贝塞尔路径、禁行线和区域
-- 地图滚轮缩放、鼠标拖拽和一键适应窗口
+## Features
 
-默认不会取消导航任务；`WAITING`、`RUNNING`、`SUSPENDED` 状态均跳过。
+### Robot management
 
-## 假定的接口端口
+- Add robots manually using a display name and IPv4 address.
+- Remove selected robots.
+- Persist the robot list and language preference with `QSettings`.
+- Refresh the current map and connection state for one or more robots.
+- Reject duplicate or invalid IPv4 addresses.
 
-| 服务 | 端口 |
-|---|---:|
-| 状态 | 19204 |
-| 控制 | 19205 |
-| 导航/任务 | 19206 |
-| 配置 | 19207 |
+### Map download
 
-协议头按 PDF 示例实现为 16 字节、大端序：`5A 01`、序列号、数据长度、消息编号、原请求编号、4 字节保留区。首次连接真机前应抓包或用单台测试机器人核对端口和协议版本。
+- Download the current map from exactly one selected robot.
+- Use the map name reported by the robot; no custom filename is requested.
+- Save the original response bytes as `<map-name>.smap` in the system Downloads directory.
+- Add a timestamp automatically when a file with the same name already exists.
+- Calculate and display the local MD5 after download.
+- Automatically open the downloaded map in the map preview.
 
-## Ubuntu 构建
+### Batch upload and map switching
+
+- Validate that a selected 2D `.smap` file contains a JSON object before upload.
+- Calculate the local map MD5.
+- Process up to three robots concurrently.
+- Query each robot's navigation state before making changes.
+- Skip robots in `WAITING`, `RUNNING`, or `SUSPENDED` state.
+- Upload a map without switching it.
+- Query the uploaded map's remote MD5 and compare it with the local file.
+- Optionally switch to the uploaded map after MD5 verification.
+- Query `current_map` and `current_map_md5` after switching.
+- Continue processing other robots when one robot fails.
+- Show per-robot progress, results, and an operation log.
+
+The application does **not** cancel active robot tasks automatically.
+
+### SEER map preview
+
+The viewer follows the map structure documented by SEER's `message_map.proto` reference and reads the Protobuf JSON representation directly with Qt JSON APIs. Both lower-camel-case and snake-case field names are accepted.
+
+Displayed layers include:
+
+- laser/occupancy scan points (`normalPosList`);
+- normal map lines;
+- landmarks, location marks, action points, park points, and charge points;
+- station headings;
+- Bezier navigation paths;
+- advanced and forbidden lines;
+- advanced areas.
+
+Viewer controls:
+
+- **Open map** loads a local `.smap` or JSON file.
+- The mouse wheel zooms in and out.
+- Dragging with the mouse pans the map.
+- **Fit map** restores the full-map view.
+- A summary shows the map name, type, version, resolution, scan-point count, station count, path count, and area count.
+
+Large scan maps are rendered as one batched graphics item instead of creating one Qt item per scan point.
+
+### Languages
+
+- Simplified Chinese
+- English
+
+The language can be changed at runtime from the toolbar. The selection is remembered for the next launch. English is the primary documentation language.
+
+## Implemented robot APIs
+
+| Operation | Request | Response | Default service port |
+|---|---:|---:|---:|
+| Query navigation status | `1020` | `11020` | `19204` |
+| Query current/stored map information | `1300` | `11300` | `19204` |
+| Query map MD5 | `1302` | `11302` | `19204` |
+| Switch loaded map | `2022` | `12022` | `19205` |
+| Upload map | `4010` | `14010` | `19207` |
+| Download map | `4011` | `14011` | `19207` |
+
+The protocol implementation uses the 16-byte, big-endian header shown in the supplied API examples:
+
+```text
+5A 01 | sequence | payload length | command | original request | reserved
+```
+
+TCP responses are buffered until the complete payload length declared by the header has arrived. This is required for large map files that span multiple TCP reads.
+
+## Build on Ubuntu
+
+Ubuntu 22.04 or later:
 
 ```bash
 sudo apt update
 sudo apt install build-essential cmake ninja-build qt6-base-dev
+
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
 ./build/amr-map-manager
 ```
 
-## Windows 构建
+## Build on Windows
 
-安装 Qt 6（MSVC 组件）、Visual Studio C++ 工具和 CMake，然后在 Qt 命令行中运行：
+Install Qt 6 with the MSVC component, Visual Studio C++ Build Tools, CMake, and Ninja. From a Qt-enabled terminal:
 
 ```powershell
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build
+.\build\amr-map-manager.exe
 ```
 
-## 安全边界
+## Basic workflow
 
-- 先在单台测试机器人验证，再操作生产机器人。
-- 上传和切换前由现场人员确认机器人处于安全、静止状态。
-- `ret_code == 0` 不是最终成功；软件还会检查远端 MD5 和当前地图。
-- 当前版本仅实现 2D JSON `.smap`，尚未开放 3D ZIP 上传。
+1. Add the robot name and IPv4 address.
+2. Select the robot and click **Refresh status**.
+3. Verify that the current map and MD5 are displayed.
+4. Use **Download current map** to save and preview the robot's current map.
+5. Select a local map and use **Upload only** for the first test.
+6. Confirm that remote MD5 verification succeeds.
+7. Use **Upload, verify and switch** only after validating the workflow on one test robot.
+
+## Project structure
+
+```text
+src/
+  core/       Robot configuration model
+  map/        SEER SMAP parser and graphics viewer
+  network/    Asynchronous TCP request handling
+  protocol/   RBK/SEER packet encoder and header decoder
+  MainWindow  Robot table, workflows, logging, and language switching
+```
+
+## Safety and current limitations
+
+- Verify the configured service ports and protocol header against one test robot before production use.
+- Confirm that robots are stationary and in a safe operating state before uploading or switching maps.
+- A successful `ret_code` is not treated as final success; upload workflows also verify MD5 and, when switching, the current map.
+- Busy robots are skipped. Automatic task cancellation is intentionally disabled.
+- Only 2D JSON `.smap` upload is currently exposed in the UI.
+- 3D ZIP maps are not yet supported.
+- The map viewer is read-only and does not edit or export map geometry.
+- The application has not yet completed production validation across all robot firmware versions.
+
+---
+
+## 中文简介
+
+AMR 地图批量管理器是一款基于 Qt 6 的桌面软件，目前支持：
+
+- 手动添加和保存 AMR；
+- 刷新机器人当前地图及 MD5；
+- 直接下载当前地图到系统下载目录；
+- 打开并预览 SEER 2D `.smap` 地图；
+- 显示扫描点、站点、方向、贝塞尔路径、禁行线和区域；
+- 批量上传地图并校验远端 MD5；
+- 在校验成功后选择性切换地图；
+- 切图前检查导航状态并跳过繁忙机器人；
+- 中文与 English 运行时切换。
+
+首次使用时请先在单台测试机器人上验证端口、协议和地图切换流程，再用于生产机器人。
