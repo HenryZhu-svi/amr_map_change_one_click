@@ -11,7 +11,18 @@ permissions:
 
 jobs:
   ubuntu-deb:
-    runs-on: ubuntu-22.04
+    name: Ubuntu 22.04 ${{ matrix.arch }} DEB
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            arch: amd64
+            artifact: ubuntu-22.04-amd64-deb
+          - runner: ubuntu-22.04-arm
+            arch: arm64
+            artifact: ubuntu-22.04-arm64-deb
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
       - name: Install build dependencies
@@ -28,9 +39,16 @@ jobs:
             libopengl-dev
       - name: Build DEB
         run: bash scripts/package-ubuntu.sh
+      - name: Verify package architecture
+        run: |
+          package="$(find dist/ubuntu -maxdepth 1 -name '*.deb' -print -quit)"
+          test -n "$package"
+          actual_arch="$(dpkg-deb -f "$package" Architecture)"
+          test "$actual_arch" = "${{ matrix.arch }}"
+          echo "Verified package architecture: $actual_arch"
       - uses: actions/upload-artifact@v4
         with:
-          name: ubuntu-22.04-deb
+          name: ${{ matrix.artifact }}
           path: |
             dist/ubuntu/*.deb
             dist/ubuntu/SHA256SUMS.txt

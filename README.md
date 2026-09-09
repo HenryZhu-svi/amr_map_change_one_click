@@ -119,7 +119,7 @@ cmake --build build
 
 ### Ubuntu DEB
 
-Install the packaging dependencies, then run the provided script on Ubuntu 22.04 x64:
+Install the packaging dependencies, then run the provided script on Ubuntu 22.04. The package architecture is selected automatically from the build machine (`amd64` or `arm64`):
 
 ```bash
 sudo apt update
@@ -128,16 +128,19 @@ sudo apt install build-essential cmake ninja-build qt6-base-dev dpkg-dev \
 bash scripts/package-ubuntu.sh
 ```
 
-Output:
+Outputs, depending on the build machine:
 
 ```text
 dist/ubuntu/amr-map-manager_0.2.0_amd64.deb
+dist/ubuntu/amr-map-manager_0.2.0_arm64.deb
 ```
 
 Install and remove it with:
 
 ```bash
 sudo apt install ./dist/ubuntu/amr-map-manager_0.2.0_amd64.deb
+# On a 64-bit Raspberry Pi or other ARM64 Ubuntu/Debian system:
+sudo apt install ./dist/ubuntu/amr-map-manager_0.2.0_arm64.deb
 sudo apt remove amr-map-manager
 ```
 
@@ -172,7 +175,7 @@ archive requires that runtime to already be installed on the target computer.
 
 ### GitHub Actions
 
-The `Build release packages` workflow can be started manually. It also runs when a version tag is pushed:
+The `Build release packages` workflow builds Windows x64, Ubuntu amd64, and Ubuntu arm64 packages. It can be started manually and also runs when a version tag is pushed:
 
 ```bash
 git tag v0.2.0
