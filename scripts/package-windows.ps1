@@ -3,7 +3,7 @@ param(
 
     [string]$VCRedistPath = "",
 
-    [string]$Version = "0.2.0",
+    [string]$Version = "0.2.1",
     [string]$InnoSetupPath = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 )
 

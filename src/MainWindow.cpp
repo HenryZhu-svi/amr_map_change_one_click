@@ -7,6 +7,7 @@
 #include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
+#include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDialog>
@@ -189,7 +190,8 @@ QString MainWindow::localizedError(const QString &error) const
 
 void MainWindow::retranslateUi()
 {
-    setWindowTitle(tx("AMR 地图批量管理器 0.2", "AMR Map Manager 0.2"));
+    setWindowTitle(tx("AMR 地图批量管理器 %1", "AMR Map Manager %1")
+                       .arg(QCoreApplication::applicationVersion()));
     m_toolbar->setWindowTitle(tx("操作", "Actions"));
     m_addAction->setText(tx("添加机器人", "Add robot"));
     m_removeAction->setText(tx("删除所选", "Remove selected"));

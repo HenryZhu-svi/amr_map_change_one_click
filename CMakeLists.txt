@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(AMRMapManager VERSION 0.2.0 LANGUAGES CXX)
+project(AMRMapManager VERSION 0.2.1 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
