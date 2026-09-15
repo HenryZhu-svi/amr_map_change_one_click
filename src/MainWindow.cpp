@@ -387,35 +387,191 @@ void MainWindow::downloadMap()
         return;
     }
     const int row = rows.first();
-    QString mapName = m_table->item(row, CurrentMap)->text().trimmed();
-    if (mapName.endsWith(QStringLiteral(".smap"), Qt::CaseInsensitive)) mapName.chop(5);
-    static const QRegularExpression valid(QStringLiteral("^[0-9A-Za-z_-]+$"));
-    if (!valid.match(mapName).hasMatch()) {
-        QMessageBox::warning(this, tx("无法下载", "Cannot download"),
-            tx("当前地图名称未知或不合法，请先刷新机器人状态。",
-               "The current map name is unknown or invalid. Refresh the robot status first."));
+    resolveDownloadMap(row);
+}
+
+void MainWindow::resolveDownloadMap(int row)
+{
+    setCell(row, Result, tx("查找当前地图的实际文件…",
+                            "Resolving the current map's stored file..."));
+    const Robot robot = robotAt(row);
+    query(row, robot.statusPort, RbkProtocol::QueryMap, {},
+          [this, row](RequestResult result) {
+        if (!result.ok) {
+            setCell(row, Result, tx("地图列表查询失败：%1", "Map list query failed: %1")
+                                     .arg(localizedError(result.error)));
+            return;
+        }
+
+        QJsonObject json;
+        QString error;
+        if (!parseJson(result.payload, &json, &error) || !responseSucceeded(json, &error)) {
+            setCell(row, Result, tx("地图列表查询失败：%1", "Map list query failed: %1")
+                                     .arg(error));
+            return;
+        }
+
+        const QString currentMap = json.value(QStringLiteral("current_map")).toString().trimmed();
+        const QString currentMd5 = json.value(QStringLiteral("current_map_md5")).toString().trimmed();
+        setCell(row, CurrentMap, currentMap.isEmpty() ? QStringLiteral("-") : currentMap);
+        setCell(row, Md5, currentMd5.isEmpty() ? QStringLiteral("-") : currentMd5);
+        if (currentMd5.isEmpty()) {
+            setCell(row, Result, tx("机器人未返回当前地图 MD5。",
+                                    "The robot did not return the current map MD5."));
+            return;
+        }
+
+        QStringList storedFiles;
+        const QJsonArray fileInfo = json.value(QStringLiteral("map_files_info")).toArray();
+        for (const QJsonValue &value : fileInfo) {
+            const QString name = value.toObject().value(QStringLiteral("name")).toString().trimmed();
+            if (!name.isEmpty()) storedFiles.append(name);
+        }
+        if (storedFiles.isEmpty()) {
+            const QJsonArray maps = json.value(QStringLiteral("maps")).toArray();
+            for (const QJsonValue &value : maps) {
+                QString name = value.toString().trimmed();
+                if (name.isEmpty()) continue;
+                if (!name.endsWith(QStringLiteral(".smap"), Qt::CaseInsensitive)) {
+                    name += QStringLiteral(".smap");
+                }
+                storedFiles.append(name);
+            }
+        }
+        storedFiles.removeDuplicates();
+        if (storedFiles.isEmpty()) {
+            setCell(row, Result, tx("机器人地图列表为空。", "The robot map list is empty."));
+            return;
+        }
+
+        findDownloadMapByMd5(row, storedFiles, currentMd5);
+    });
+}
+
+void MainWindow::findDownloadMapByMd5(int row, const QStringList &storedFiles,
+                                      const QString &expectedMd5, int fallbackIndex)
+{
+    if (fallbackIndex >= storedFiles.size()) {
+        setCell(row, Result,
+                tx("找不到与当前地图 MD5 匹配的存储文件。",
+                   "No stored file matches the current map MD5."));
         return;
     }
+
+    QJsonArray requestedNames;
+    if (fallbackIndex < 0) {
+        for (const QString &name : storedFiles) requestedNames.append(name);
+        setCell(row, Result, tx("按 MD5 定位当前地图…",
+                                "Locating the current map by MD5..."));
+    } else {
+        requestedNames.append(storedFiles.at(fallbackIndex));
+        setCell(row, Result,
+                tx("逐个核对地图文件（%1/%2）…",
+                   "Checking map files individually (%1/%2)...")
+                    .arg(fallbackIndex + 1)
+                    .arg(storedFiles.size()));
+    }
+
+    const Robot robot = robotAt(row);
+    query(row, robot.statusPort, RbkProtocol::QueryMapMd5,
+          compactJson({{QStringLiteral("map_names"), requestedNames}}),
+          [this, row, storedFiles, expectedMd5, fallbackIndex](RequestResult result) {
+        if (!result.ok) {
+            setCell(row, Result, tx("MD5 查询失败：%1", "MD5 query failed: %1")
+                                     .arg(localizedError(result.error)));
+            return;
+        }
+
+        QJsonObject json;
+        QString error;
+        if (!parseJson(result.payload, &json, &error) || !responseSucceeded(json, &error)) {
+            if (fallbackIndex < 0) {
+                log(tx("批量 MD5 查询失败，改为逐个查询：%1",
+                       "Batch MD5 query failed; retrying files individually: %1").arg(error));
+                findDownloadMapByMd5(row, storedFiles, expectedMd5, 0);
+            } else {
+                log(tx("跳过无法查询的地图文件 %1：%2",
+                       "Skipping map file %1 because it cannot be queried: %2")
+                        .arg(storedFiles.at(fallbackIndex), error));
+                findDownloadMapByMd5(row, storedFiles, expectedMd5, fallbackIndex + 1);
+            }
+            return;
+        }
+
+        const QJsonArray info = json.value(QStringLiteral("map_info")).toArray();
+        for (const QJsonValue &value : info) {
+            const QJsonObject item = value.toObject();
+            if (item.value(QStringLiteral("md5")).toString().compare(
+                    expectedMd5, Qt::CaseInsensitive) != 0) {
+                continue;
+            }
+            QString storedFileName = item.value(QStringLiteral("name")).toString().trimmed();
+            if (storedFileName.isEmpty() && fallbackIndex >= 0) {
+                storedFileName = storedFiles.at(fallbackIndex);
+            }
+            if (!storedFileName.isEmpty()) {
+                log(tx("当前地图实际存储文件：%1",
+                       "Current map's stored file: %1").arg(storedFileName));
+                downloadStoredMap(row, storedFileName);
+                return;
+            }
+        }
+
+        if (fallbackIndex < 0) {
+            setCell(row, Result,
+                    tx("找不到与当前地图 MD5 匹配的存储文件。",
+                       "No stored file matches the current map MD5."));
+        } else {
+            findDownloadMapByMd5(row, storedFiles, expectedMd5, fallbackIndex + 1);
+        }
+    });
+}
+
+void MainWindow::downloadStoredMap(int row, const QString &storedFileName)
+{
+    QString requestName = storedFileName.trimmed();
+    if (requestName.endsWith(QStringLiteral(".smap"), Qt::CaseInsensitive)) requestName.chop(5);
+    if (requestName.isEmpty()) {
+        setCell(row, Result, tx("机器人返回的地图文件名为空。",
+                                "The robot returned an empty map filename."));
+        return;
+    }
+
     QString directory = QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
     if (directory.isEmpty()) directory = QDir::homePath();
-    QString fileName = QDir(directory).filePath(mapName + QStringLiteral(".smap"));
+    QString localBaseName = QFileInfo(storedFileName).fileName();
+    if (!localBaseName.endsWith(QStringLiteral(".smap"), Qt::CaseInsensitive)) {
+        localBaseName += QStringLiteral(".smap");
+    }
+    localBaseName.replace(QRegularExpression(QStringLiteral("[<>:\"/\\\\|?*]")),
+                          QStringLiteral("_"));
+    QString fileName = QDir(directory).filePath(localBaseName);
     if (QFileInfo::exists(fileName)) {
-        fileName = QDir(directory).filePath(QStringLiteral("%1_%2.smap").arg(
-            mapName, QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"))));
+        const QFileInfo info(localBaseName);
+        fileName = QDir(directory).filePath(QStringLiteral("%1_%2.%3").arg(
+            info.completeBaseName(),
+            QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss")),
+            info.suffix().isEmpty() ? QStringLiteral("smap") : info.suffix()));
     }
     setCell(row, Result, tx("下载当前地图…", "Downloading current map..."));
+    log(tx("下载机器人存储地图 %1（API map_name: %2）",
+           "Downloading robot map %1 (API map_name: %2)")
+            .arg(storedFileName, requestName));
     const Robot robot = robotAt(row);
     query(row, robot.configPort, RbkProtocol::DownloadMap,
-          compactJson({{QStringLiteral("map_name"), mapName}}),
-          [this, row, fileName](RequestResult result) {
+          compactJson({{QStringLiteral("map_name"), requestName}}),
+          [this, row, fileName, requestName](RequestResult result) {
         if (!result.ok) { setCell(row, Result, localizedError(result.error)); return; }
         QJsonObject possibleError;
         QString ignored;
         if (parseJson(result.payload, &possibleError, &ignored)
             && possibleError.contains(QStringLiteral("ret_code"))
             && possibleError.value(QStringLiteral("ret_code")).toInt() != 0) {
-            setCell(row, Result, possibleError.value(QStringLiteral("err_msg")).toString(
-                tx("机器人拒绝下载", "The robot rejected the download")));
+            const QString robotError = possibleError.value(QStringLiteral("err_msg")).toString(
+                tx("机器人拒绝下载", "The robot rejected the download"));
+            setCell(row, Result,
+                    tx("下载地图 %1 失败：%2", "Download of map %1 failed: %2")
+                        .arg(requestName, robotError));
             return;
         }
         QFile file(fileName);

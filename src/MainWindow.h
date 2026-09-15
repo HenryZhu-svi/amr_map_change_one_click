@@ -7,6 +7,7 @@
 #include <QMainWindow>
 #include <QHash>
 #include <QQueue>
+#include <QStringList>
 
 class QLabel;
 class QPlainTextEdit;
@@ -35,6 +36,10 @@ private:
     void removeSelected();
     void refreshSelected();
     void downloadMap();
+    void resolveDownloadMap(int row);
+    void findDownloadMapByMd5(int row, const QStringList &storedFiles,
+                              const QString &expectedMd5, int fallbackIndex = -1);
+    void downloadStoredMap(int row, const QString &storedFileName);
     void openMapFile();
     void updateMapSummary();
     void chooseAndUpload(bool switchAfterUpload);

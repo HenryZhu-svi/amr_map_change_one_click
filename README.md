@@ -2,7 +2,7 @@
 
 AMR Map Manager is a Qt 6 desktop application for maintaining a manually configured fleet of SEER-compatible AMRs, downloading and previewing 2D maps, and safely uploading and switching maps across multiple robots.
 
-The application is currently at version **0.2.1** and is designed for both Ubuntu and Windows.
+The application is currently at version **0.2.2** and is designed for both Ubuntu and Windows.
 
 
 ## Features
@@ -18,7 +18,10 @@ The application is currently at version **0.2.1** and is designed for both Ubunt
 ### Map download
 
 - Download the current map from exactly one selected robot.
-- Use the map name reported by the robot; no custom filename is requested.
+- Resolve the current map's actual stored filename by matching `current_map_md5`
+  against the robot's stored-map list before downloading.
+- Fall back to checking stored files individually when a stale list entry makes
+  the robot reject a batch MD5 query.
 - Save the original response bytes as `<map-name>.smap` in the system Downloads directory.
 - Add a timestamp automatically when a file with the same name already exists.
 - Calculate and display the local MD5 after download.
@@ -131,16 +134,16 @@ bash scripts/package-ubuntu.sh
 Outputs, depending on the build machine:
 
 ```text
-dist/ubuntu/amr-map-manager_0.2.1_amd64.deb
-dist/ubuntu/amr-map-manager_0.2.1_arm64.deb
+dist/ubuntu/amr-map-manager_0.2.2_amd64.deb
+dist/ubuntu/amr-map-manager_0.2.2_arm64.deb
 ```
 
 Install and remove it with:
 
 ```bash
-sudo apt install ./dist/ubuntu/amr-map-manager_0.2.1_amd64.deb
+sudo apt install ./dist/ubuntu/amr-map-manager_0.2.2_amd64.deb
 # On a 64-bit Raspberry Pi or other ARM64 Ubuntu/Debian system:
-sudo apt install ./dist/ubuntu/amr-map-manager_0.2.1_arm64.deb
+sudo apt install ./dist/ubuntu/amr-map-manager_0.2.2_arm64.deb
 sudo apt remove amr-map-manager
 ```
 
@@ -152,7 +155,7 @@ Run the packaging script from a regular PowerShell terminal after installing Vis
 .\scripts\package-windows.ps1 `
   -QtRoot "C:\Qt\6.8.3\msvc2022_64" `
   -VCRedistPath "C:\Installers\VC_redist.x64.exe" `
-  -Version "0.2.1"
+  -Version "0.2.2"
 ```
 
 When Qt is installed under `C:\Qt` and the Visual C++ Redistributable is
@@ -160,14 +163,14 @@ available in the Visual Studio installation, both paths are detected
 automatically:
 
 ```powershell
-.\scripts\package-windows.ps1 -Version "0.2.1"
+.\scripts\package-windows.ps1 -Version "0.2.2"
 ```
 
 Outputs:
 
 ```text
-dist/windows/AMRMapManager-0.2.1-win64-setup.exe
-dist/windows/AMRMapManager-0.2.1-win64-portable.zip
+dist/windows/AMRMapManager-0.2.2-win64-setup.exe
+dist/windows/AMRMapManager-0.2.2-win64-portable.zip
 ```
 
 The installer deploys the required Microsoft Visual C++ Runtime. The portable
@@ -178,8 +181,8 @@ archive requires that runtime to already be installed on the target computer.
 The `Build release packages` workflow builds Windows x64, Ubuntu amd64, and Ubuntu arm64 packages. It can be started manually and also runs when a version tag is pushed:
 
 ```bash
-git tag v0.2.1
-git push origin v0.2.1
+git tag v0.2.2
+git push origin v0.2.2
 ```
 
 ## Basic workflow
