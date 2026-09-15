@@ -178,7 +178,11 @@ archive requires that runtime to already be installed on the target computer.
 
 ### GitHub Actions
 
-The `Build release packages` workflow builds Windows x64, Ubuntu amd64, and Ubuntu arm64 packages. It can be started manually and also runs when a version tag is pushed:
+The `Build release packages` workflow builds Windows x64, Ubuntu amd64, and
+Ubuntu arm64 packages. A manual run keeps the packages as workflow artifacts.
+When a `v*` version tag is pushed, the workflow also creates or updates the
+matching GitHub Release, generates release notes, and uploads all installers,
+portable archives, DEB packages, and platform-specific SHA-256 files:
 
 ```bash
 git tag v0.2.2
