@@ -319,7 +319,7 @@ private:
     void buildPointBuckets()
     {
         m_pointBuckets.clear();
-        m_pointBuckets.reserve(std::max(64, m_normalPoints.size() / 32));
+        m_pointBuckets.reserve(std::max<qsizetype>(64, m_normalPoints.size() / 32));
         for (const QPointF &point : m_normalPoints) {
             const int x = int(std::floor((point.x() - m_bounds.left()) / m_bucketWorldSize));
             const int y = int(std::floor((point.y() - m_bounds.top()) / m_bucketWorldSize));
