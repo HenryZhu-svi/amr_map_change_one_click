@@ -19,6 +19,7 @@
 #include <QVector>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace {
 
@@ -67,6 +68,63 @@ struct Curve {
 struct NamedLine {
     QLineF line;
     QString className;
+};
+
+class RobotPoseItem final : public QGraphicsItem {
+public:
+    QRectF boundingRect() const override
+    {
+        return QRectF(-22.0, -24.0, 300.0, 55.0);
+    }
+
+    void setPose(double angle, double confidence, const QString &label)
+    {
+        prepareGeometryChange();
+        m_angle = angle;
+        m_confidence = confidence;
+        m_label = label;
+        update();
+    }
+
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override
+    {
+        QColor color(110, 118, 126);
+        if (std::isfinite(m_confidence)) {
+            if (m_confidence >= 0.8) color = QColor(36, 164, 85);
+            else if (m_confidence >= 0.6) color = QColor(239, 174, 29);
+            else color = QColor(220, 60, 55);
+        }
+
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setPen(QPen(color.darker(130), 2.0));
+        painter->setBrush(QColor(color.red(), color.green(), color.blue(), 55));
+        painter->drawEllipse(QPointF(0.0, 0.0), 18.0, 18.0);
+
+        painter->save();
+        painter->rotate(-m_angle * 180.0 / 3.14159265358979323846);
+        painter->setBrush(color);
+        painter->setPen(QPen(Qt::white, 1.2));
+        painter->drawPolygon(QPolygonF{
+            QPointF(17.0, 0.0), QPointF(-10.0, -9.0),
+            QPointF(-5.0, 0.0), QPointF(-10.0, 9.0)});
+        painter->restore();
+
+        QFont font = painter->font();
+        font.setPointSizeF(9.0);
+        font.setBold(true);
+        painter->setFont(font);
+        const QRectF textRect(24.0, -18.0, 250.0, 36.0);
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(QColor(255, 255, 255, 225));
+        painter->drawRoundedRect(textRect.adjusted(-5.0, -2.0, 5.0, 2.0), 4.0, 4.0);
+        painter->setPen(QPen(color.darker(150), 1.0));
+        painter->drawText(textRect, Qt::AlignLeft | Qt::AlignVCenter, m_label);
+    }
+
+private:
+    double m_angle = 0.0;
+    double m_confidence = std::numeric_limits<double>::quiet_NaN();
+    QString m_label;
 };
 
 class MapGraphicsItem final : public QGraphicsItem {
@@ -275,6 +333,7 @@ bool MapView::loadBytes(const QByteArray &bytes, MapSummary *summary, QString *e
         return false;
     }
     auto *item = new MapGraphicsItem(document.object(), summary);
+    m_robotPoseItem = nullptr;
     m_scene->clear();
     m_scene->addItem(item);
     m_scene->setSceneRect(item->boundingRect());
@@ -295,6 +354,28 @@ void MapView::fitMap()
 bool MapView::hasMap() const
 {
     return m_hasMap;
+}
+
+void MapView::setRobotPose(double x, double y, double angle, double confidence,
+                           const QString &label)
+{
+    if (!m_hasMap || !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(angle)) return;
+    if (!m_robotPoseItem) {
+        auto *item = new RobotPoseItem;
+        item->setFlag(QGraphicsItem::ItemIgnoresTransformations, true);
+        item->setZValue(1000.0);
+        m_scene->addItem(item);
+        m_robotPoseItem = item;
+    }
+    auto *item = static_cast<RobotPoseItem *>(m_robotPoseItem);
+    item->setPos(x, -y);
+    item->setPose(angle, confidence, label);
+    item->setVisible(true);
+}
+
+void MapView::clearRobotPose()
+{
+    if (m_robotPoseItem) m_robotPoseItem->setVisible(false);
 }
 
 void MapView::wheelEvent(QWheelEvent *event)

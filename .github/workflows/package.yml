@@ -84,7 +84,7 @@ jobs:
           $version = if ("${{ github.ref_type }}" -eq "tag") {
             "${{ github.ref_name }}".TrimStart("v")
           } else {
-            "0.2.2"
+            "0.3.0"
           }
           .\scripts\package-windows.ps1 `
             -QtRoot "$env:QT_ROOT_DIR" `

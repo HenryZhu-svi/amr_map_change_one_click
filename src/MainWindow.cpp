@@ -32,6 +32,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QStandardPaths>
 #include <QStringList>
@@ -42,6 +43,8 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QVBoxLayout>
+#include <cmath>
+#include <limits>
 
 namespace {
 constexpr int MaxConcurrentRobots = 3;
@@ -85,6 +88,32 @@ QString knownResultText(const QString &text, bool english)
     return text;
 }
 
+QString normalizedMapName(QString name)
+{
+    name = name.trimmed();
+    while (name.endsWith(QStringLiteral(".smap"), Qt::CaseInsensitive)) {
+        name.chop(5);
+        name = name.trimmed();
+    }
+    return name.toCaseFolded();
+}
+
+QString localizationMethodName(int method, bool english)
+{
+    switch (method) {
+    case 0: return english ? QStringLiteral("Natural features") : QStringLiteral("自然轮廓");
+    case 1: return english ? QStringLiteral("Reflectors") : QStringLiteral("反光柱");
+    case 2: return english ? QStringLiteral("QR code") : QStringLiteral("二维码");
+    case 3: return english ? QStringLiteral("Odometry") : QStringLiteral("里程计");
+    case 4: return english ? QStringLiteral("3D localization") : QStringLiteral("3D 定位");
+    case 5: return english ? QStringLiteral("Ceiling code") : QStringLiteral("天码");
+    case 6: return english ? QStringLiteral("Feature localization") : QStringLiteral("特征定位");
+    case 7: return english ? QStringLiteral("3D feature localization") : QStringLiteral("3D 特征定位");
+    case 8: return english ? QStringLiteral("3D KF localization") : QStringLiteral("3D KF 定位");
+    default: return english ? QStringLiteral("Unknown") : QStringLiteral("未知");
+    }
+}
+
 QByteArray compactJson(const QJsonObject &object)
 {
     return QJsonDocument(object).toJson(QJsonDocument::Compact);
@@ -119,6 +148,12 @@ void MainWindow::buildUi()
     m_downloadAction = m_toolbar->addAction(QString(), this, &MainWindow::downloadMap);
     m_openMapAction = m_toolbar->addAction(QString(), this, &MainWindow::openMapFile);
     m_fitMapAction = m_toolbar->addAction(QString(), this, [this] { m_mapView->fitMap(); });
+    m_livePositionAction = m_toolbar->addAction(QString());
+    m_livePositionAction->setCheckable(true);
+    connect(m_livePositionAction, &QAction::toggled, this, [this](bool enabled) {
+        if (enabled) startLivePosition();
+        else stopLivePosition();
+    });
     m_toolbar->addSeparator();
     m_uploadAction = m_toolbar->addAction(QString(), this, [this] { chooseAndUpload(false); });
     m_uploadSwitchAction = m_toolbar->addAction(QString(), this,
@@ -158,9 +193,11 @@ void MainWindow::buildUi()
     auto *mapLayout = new QVBoxLayout(mapPage);
     mapLayout->setContentsMargins(4, 4, 4, 4);
     m_mapInfoLabel = new QLabel(mapPage);
+    m_livePositionLabel = new QLabel(mapPage);
     m_mapView = new MapView(mapPage);
     m_mapView->setMinimumHeight(260);
     mapLayout->addWidget(m_mapInfoLabel);
+    mapLayout->addWidget(m_livePositionLabel);
     mapLayout->addWidget(m_mapView, 1);
     m_tabs->addTab(mapPage, QString());
     m_tabs->addTab(m_log, QString());
@@ -169,6 +206,10 @@ void MainWindow::buildUi()
     layout->addWidget(m_batchLabel);
     layout->addWidget(m_tabs, 2);
     setCentralWidget(central);
+
+    m_locationTimer = new QTimer(this);
+    m_locationTimer->setInterval(500);
+    connect(m_locationTimer, &QTimer::timeout, this, &MainWindow::pollLivePosition);
     retranslateUi();
 }
 
@@ -199,6 +240,9 @@ void MainWindow::retranslateUi()
     m_downloadAction->setText(tx("下载当前地图", "Download current map"));
     m_openMapAction->setText(tx("打开地图", "Open map"));
     m_fitMapAction->setText(tx("适应窗口", "Fit map"));
+    m_livePositionAction->setText(m_livePositionAction->isChecked()
+        ? tx("停止实时置信度", "Stop live confidence")
+        : tx("实时置信度", "Live confidence"));
     m_uploadAction->setText(tx("仅上传", "Upload only"));
     m_uploadSwitchAction->setText(tx("上传、验证并切换", "Upload, verify and switch"));
     m_languageLabel->setText(tx("语言：", "Language: "));
@@ -211,6 +255,13 @@ void MainWindow::retranslateUi()
     m_log->setPlaceholderText(tx("操作日志", "Operation log"));
     m_tabs->setTabText(0, tx("地图预览", "Map preview"));
     m_tabs->setTabText(1, tx("操作日志", "Operation log"));
+    if (m_livePositionAction->isChecked()) {
+        m_livePositionLabel->setText(tx("正在读取实时位置与置信度…",
+                                        "Reading live position and confidence..."));
+    } else {
+        m_livePositionLabel->setText(tx("实时置信度已停止。",
+                                        "Live confidence is stopped."));
+    }
     updateMapSummary();
     statusBar()->showMessage(tx("真实切图前，请先在单台测试机器人验证端口和协议版本。",
                                 "Verify ports and protocol version on one test robot before a real map switch."));
@@ -340,8 +391,154 @@ void MainWindow::removeSelected()
         return;
     }
     const auto rows = selectedRows();
+    if (m_livePositionRow >= 0 && rows.contains(m_livePositionRow)) stopLivePosition();
     for (auto it = rows.crbegin(); it != rows.crend(); ++it) m_table->removeRow(*it);
     saveRobots();
+}
+
+void MainWindow::startLivePosition()
+{
+    if (!m_mapView->hasMap()) {
+        QMessageBox::information(this, tx("请先打开地图", "Open a map first"),
+                                 tx("请先打开或下载机器人当前地图。",
+                                    "Open or download the robot's current map first."));
+        stopLivePosition();
+        return;
+    }
+    const QList<int> rows = selectedRows();
+    if (rows.size() != 1) {
+        QMessageBox::information(this, tx("选择机器人", "Select a robot"),
+                                 tx("实时置信度只能显示一台机器人，请只勾选一台。",
+                                    "Live confidence can display one robot. Select exactly one robot."));
+        stopLivePosition();
+        return;
+    }
+
+    m_livePositionRow = rows.first();
+    m_livePositionFailures = 0;
+    m_locationRequestPending = true;
+    const int session = ++m_livePositionSession;
+    m_livePositionAction->setText(tx("停止实时置信度", "Stop live confidence"));
+    m_livePositionLabel->setText(tx("正在确认机器人当前地图…",
+                                    "Checking the robot's current map..."));
+
+    const Robot robot = robotAt(m_livePositionRow);
+    query(m_livePositionRow, robot.statusPort, RbkProtocol::QueryMap, {},
+          [this, session](RequestResult result) {
+        if (session != m_livePositionSession) return;
+        m_locationRequestPending = false;
+        QJsonObject json;
+        QString error;
+        if (!result.ok || !parseJson(result.payload, &json, &error)
+            || !responseSucceeded(json, &error)) {
+            const QString message = result.ok ? error : localizedError(result.error);
+            QMessageBox::warning(this, tx("无法启动实时置信度", "Cannot start live confidence"),
+                                 message);
+            stopLivePosition();
+            return;
+        }
+
+        const QString currentMap = json.value(QStringLiteral("current_map")).toString();
+        const QString currentMd5 = json.value(QStringLiteral("current_map_md5")).toString();
+        setCell(m_livePositionRow, CurrentMap, currentMap.isEmpty() ? QStringLiteral("-") : currentMap);
+        setCell(m_livePositionRow, Md5, currentMd5.isEmpty() ? QStringLiteral("-") : currentMd5);
+        const QString previewMap = normalizedMapName(m_mapSummary.name);
+        if (!previewMap.isEmpty() && normalizedMapName(currentMap) != previewMap) {
+            QMessageBox::warning(this, tx("地图不一致", "Map mismatch"),
+                tx("机器人当前地图是 %1，预览地图是 %2。\n"
+                   "请打开该机器人的当前地图后再启动。",
+                   "The robot is using map %1, while the preview shows %2.\n"
+                   "Open the robot's current map before starting live confidence.")
+                    .arg(currentMap, m_mapSummary.name));
+            stopLivePosition();
+            return;
+        }
+
+        m_locationTimer->start();
+        pollLivePosition();
+    }, 5000);
+}
+
+void MainWindow::stopLivePosition(bool clearMarker)
+{
+    ++m_livePositionSession;
+    if (m_locationTimer) m_locationTimer->stop();
+    m_locationRequestPending = false;
+    m_livePositionRow = -1;
+    m_livePositionFailures = 0;
+    if (clearMarker && m_mapView) m_mapView->clearRobotPose();
+    if (m_livePositionAction) {
+        const QSignalBlocker blocker(m_livePositionAction);
+        m_livePositionAction->setChecked(false);
+        m_livePositionAction->setText(tx("实时置信度", "Live confidence"));
+    }
+    if (m_livePositionLabel) {
+        m_livePositionLabel->setText(tx("实时置信度已停止。",
+                                        "Live confidence is stopped."));
+    }
+}
+
+void MainWindow::pollLivePosition()
+{
+    if (m_livePositionRow < 0 || m_locationRequestPending
+        || !m_livePositionAction->isChecked()) return;
+
+    const int row = m_livePositionRow;
+    const int session = m_livePositionSession;
+    const Robot robot = robotAt(row);
+    m_locationRequestPending = true;
+    query(row, robot.statusPort, RbkProtocol::QueryLocation, {},
+          [this, row, session, robot](RequestResult result) {
+        if (session != m_livePositionSession) return;
+        m_locationRequestPending = false;
+
+        QJsonObject json;
+        QString error;
+        if (!result.ok || !parseJson(result.payload, &json, &error)
+            || !responseSucceeded(json, &error)
+            || !json.value(QStringLiteral("x")).isDouble()
+            || !json.value(QStringLiteral("y")).isDouble()
+            || !json.value(QStringLiteral("angle")).isDouble()) {
+            ++m_livePositionFailures;
+            const QString message = !result.ok ? localizedError(result.error)
+                : (!error.isEmpty() ? error : tx("位置响应缺少 x、y 或 angle。",
+                                                "The location response is missing x, y, or angle."));
+            m_livePositionLabel->setText(tx("实时位置读取失败（%1）：%2",
+                                            "Live position read failed (%1): %2")
+                                             .arg(m_livePositionFailures).arg(message));
+            if (m_livePositionFailures >= 3) m_mapView->clearRobotPose();
+            return;
+        }
+
+        m_livePositionFailures = 0;
+        const double x = json.value(QStringLiteral("x")).toDouble();
+        const double y = json.value(QStringLiteral("y")).toDouble();
+        const double angle = json.value(QStringLiteral("angle")).toDouble();
+        double confidence = std::numeric_limits<double>::quiet_NaN();
+        if (json.value(QStringLiteral("confidence")).isDouble()) {
+            const double value = json.value(QStringLiteral("confidence")).toDouble();
+            if (value >= 0.0 && value <= 1.0) confidence = value;
+        }
+        const int method = json.value(QStringLiteral("loc_method")).toInt(-1);
+        const QString confidenceText = std::isfinite(confidence)
+            ? QStringLiteral("%1%").arg(confidence * 100.0, 0, 'f', 1)
+            : tx("无数据", "N/A");
+        const QString methodText = localizationMethodName(method, m_english);
+        m_mapView->setRobotPose(x, y, angle, confidence,
+                                QStringLiteral("%1  %2").arg(robot.name, confidenceText));
+        m_livePositionLabel->setText(
+            tx("机器人：%1    X：%2 m    Y：%3 m    朝向：%4 rad    "
+               "置信度：%5    定位方式：%6    更新：%7",
+               "Robot: %1    X: %2 m    Y: %3 m    Heading: %4 rad    "
+               "Confidence: %5    Method: %6    Updated: %7")
+                .arg(robot.name)
+                .arg(x, 0, 'f', 3)
+                .arg(y, 0, 'f', 3)
+                .arg(angle, 0, 'f', 3)
+                .arg(confidenceText)
+                .arg(methodText)
+                .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"))));
+    }, 2000);
 }
 
 void MainWindow::refreshSelected()
@@ -386,6 +583,7 @@ void MainWindow::downloadMap()
                                     "Select exactly one robot to download its current map."));
         return;
     }
+    if (m_livePositionAction->isChecked()) stopLivePosition();
     const int row = rows.first();
     resolveDownloadMap(row);
 }
@@ -612,6 +810,8 @@ void MainWindow::openMapFile()
            "SEER maps (*.smap);;JSON files (*.json);;All files (*)"));
     if (fileName.isEmpty()) return;
 
+    if (m_livePositionAction->isChecked()) stopLivePosition();
+
     MapSummary summary;
     QString error;
     if (!m_mapView->loadFile(fileName, &summary, &error)) {
@@ -655,6 +855,7 @@ void MainWindow::chooseAndUpload(bool switchAfterUpload)
                                     "Select at least one target robot."));
         return;
     }
+    if (m_livePositionAction->isChecked()) stopLivePosition();
     const QString fileName = QFileDialog::getOpenFileName(this,
         tx("选择 2D 地图", "Select a 2D map"), {},
         tx("SMAP (*.smap);;JSON (*.json)", "SMAP (*.smap);;JSON (*.json)"));

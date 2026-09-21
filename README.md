@@ -2,7 +2,7 @@
 
 AMR Map Manager is a Qt 6 desktop application for maintaining a manually configured fleet of SEER-compatible AMRs, downloading and previewing 2D maps, and safely uploading and switching maps across multiple robots.
 
-The application is currently at version **0.2.2** and is designed for both Ubuntu and Windows.
+The application is currently at version **0.3.0** and is designed for both Ubuntu and Windows.
 
 
 ## Features
@@ -69,6 +69,16 @@ Viewer controls:
 
 Large scan maps are rendered as one batched graphics item instead of creating one Qt item per scan point.
 
+### Live localization confidence
+
+- Select exactly one robot and open or download its current map.
+- Use **Live confidence** to query the robot position twice per second.
+- Verify that the robot's loaded map matches the preview before displaying its pose.
+- Draw a fixed-size robot marker with heading and numeric confidence on the map.
+- Show the current coordinates, localization method, confidence, and update time.
+- Color the marker green at 0.8 or above, amber from 0.6 to 0.8, and red below 0.6.
+- Keep at most one location request in flight and hide the marker after three consecutive failures.
+
 ### Languages
 
 - Simplified Chinese
@@ -80,6 +90,7 @@ The language can be changed at runtime from the toolbar. The selection is rememb
 
 | Operation | Request | Response | Default service port |
 |---|---:|---:|---:|
+| Query position and localization confidence | `1004` | `11004` | `19204` |
 | Query navigation status | `1020` | `11020` | `19204` |
 | Query current/stored map information | `1300` | `11300` | `19204` |
 | Query map MD5 | `1302` | `11302` | `19204` |
@@ -134,16 +145,16 @@ bash scripts/package-ubuntu.sh
 Outputs, depending on the build machine:
 
 ```text
-dist/ubuntu/amr-map-manager_0.2.2_amd64.deb
-dist/ubuntu/amr-map-manager_0.2.2_arm64.deb
+dist/ubuntu/amr-map-manager_0.3.0_amd64.deb
+dist/ubuntu/amr-map-manager_0.3.0_arm64.deb
 ```
 
 Install and remove it with:
 
 ```bash
-sudo apt install ./dist/ubuntu/amr-map-manager_0.2.2_amd64.deb
+sudo apt install ./dist/ubuntu/amr-map-manager_0.3.0_amd64.deb
 # On a 64-bit Raspberry Pi or other ARM64 Ubuntu/Debian system:
-sudo apt install ./dist/ubuntu/amr-map-manager_0.2.2_arm64.deb
+sudo apt install ./dist/ubuntu/amr-map-manager_0.3.0_arm64.deb
 sudo apt remove amr-map-manager
 ```
 
@@ -155,7 +166,7 @@ Run the packaging script from a regular PowerShell terminal after installing Vis
 .\scripts\package-windows.ps1 `
   -QtRoot "C:\Qt\6.8.3\msvc2022_64" `
   -VCRedistPath "C:\Installers\VC_redist.x64.exe" `
-  -Version "0.2.2"
+  -Version "0.3.0"
 ```
 
 When Qt is installed under `C:\Qt` and the Visual C++ Redistributable is
@@ -163,14 +174,14 @@ available in the Visual Studio installation, both paths are detected
 automatically:
 
 ```powershell
-.\scripts\package-windows.ps1 -Version "0.2.2"
+.\scripts\package-windows.ps1 -Version "0.3.0"
 ```
 
 Outputs:
 
 ```text
-dist/windows/AMRMapManager-0.2.2-win64-setup.exe
-dist/windows/AMRMapManager-0.2.2-win64-portable.zip
+dist/windows/AMRMapManager-0.3.0-win64-setup.exe
+dist/windows/AMRMapManager-0.3.0-win64-portable.zip
 ```
 
 The installer deploys the required Microsoft Visual C++ Runtime. The portable
@@ -185,8 +196,8 @@ matching GitHub Release, generates release notes, and uploads all installers,
 portable archives, DEB packages, and platform-specific SHA-256 files:
 
 ```bash
-git tag v0.2.2
-git push origin v0.2.2
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 ## Basic workflow

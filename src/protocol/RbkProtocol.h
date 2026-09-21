@@ -8,6 +8,7 @@ namespace RbkProtocol {
 constexpr qsizetype HeaderSize = 16;
 
 enum Command : quint16 {
+    QueryLocation = 1004,
     QueryTask = 1020,
     QueryMap = 1300,
     QueryStations = 1301,

@@ -17,6 +17,7 @@ class QAction;
 class QComboBox;
 class QToolBar;
 class QTabWidget;
+class QTimer;
 
 class MainWindow final : public QMainWindow {
     Q_OBJECT
@@ -35,6 +36,9 @@ private:
     void addRobot();
     void removeSelected();
     void refreshSelected();
+    void startLivePosition();
+    void stopLivePosition(bool clearMarker = true);
+    void pollLivePosition();
     void downloadMap();
     void resolveDownloadMap(int row);
     void findDownloadMapByMd5(int row, const QStringList &storedFiles,
@@ -77,8 +81,11 @@ private:
     QAction *m_downloadAction = nullptr;
     QAction *m_openMapAction = nullptr;
     QAction *m_fitMapAction = nullptr;
+    QAction *m_livePositionAction = nullptr;
     QAction *m_uploadAction = nullptr;
     QAction *m_uploadSwitchAction = nullptr;
+    QTimer *m_locationTimer = nullptr;
+    QLabel *m_livePositionLabel = nullptr;
     QQueue<int> m_pendingRows;
     int m_activeOperations = 0;
     int m_completedOperations = 0;
@@ -87,6 +94,10 @@ private:
     QString m_mapName;
     QString m_mapMd5;
     QHash<int, QString> m_remoteMapNames;
+    int m_livePositionRow = -1;
+    int m_livePositionSession = 0;
+    int m_livePositionFailures = 0;
+    bool m_locationRequestPending = false;
     bool m_switchAfterUpload = false;
     bool m_english = false;
     bool m_hasMapSummary = false;

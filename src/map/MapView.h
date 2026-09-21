@@ -4,6 +4,7 @@
 #include <QString>
 
 class QGraphicsScene;
+class QGraphicsItem;
 
 struct MapSummary {
     QString name;
@@ -24,6 +25,9 @@ public:
     bool loadBytes(const QByteArray &bytes, MapSummary *summary, QString *error);
     void fitMap();
     bool hasMap() const;
+    void setRobotPose(double x, double y, double angle, double confidence,
+                      const QString &label);
+    void clearRobotPose();
 
 protected:
     void wheelEvent(QWheelEvent *event) override;
@@ -31,6 +35,7 @@ protected:
 
 private:
     QGraphicsScene *m_scene = nullptr;
+    QGraphicsItem *m_robotPoseItem = nullptr;
     bool m_hasMap = false;
     bool m_firstResizeAfterLoad = false;
 };
