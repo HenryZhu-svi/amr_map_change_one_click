@@ -4,12 +4,15 @@
 #include <QFont>
 #include <QGraphicsItem>
 #include <QGraphicsScene>
+#include <QHash>
+#include <QImage>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLineF>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPixmap>
 #include <QPolygonF>
 #include <QRectF>
 #include <QResizeEvent>
@@ -225,7 +228,20 @@ public:
         const double margin = std::max(0.5, std::max(m_bounds.width(), m_bounds.height()) * 0.015);
         m_bounds.adjust(-margin, -margin, margin, margin);
 
-        summary->normalPointCount = m_normalPoints.size();
+        // Render at twice the declared map resolution so level 0 remains crisp
+        // during ordinary zoom-in, while lower levels serve overview scales.
+        m_pixelsPerMeter = summary->resolution > 0.0
+            ? std::clamp(2.0 / summary->resolution, 8.0, 160.0)
+            : 20.0;
+        m_bucketWorldSize = TilePixels / m_pixelsPerMeter;
+        m_maxTileLevel = std::clamp(
+            int(std::floor(std::log2(m_pixelsPerMeter / MinimumPixelsPerMeter))), 0, 12);
+        const int normalPointCount = m_normalPoints.size();
+        buildPointBuckets();
+        m_normalPoints.clear();
+        m_normalPoints.squeeze();
+
+        summary->normalPointCount = normalPointCount;
         summary->stationCount = m_points.size();
         summary->pathCount = m_curves.size() + m_advancedLines.size();
         summary->areaCount = m_areas.size();
@@ -233,17 +249,11 @@ public:
 
     QRectF boundingRect() const override { return m_bounds; }
 
-    void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *) override
     {
         const qreal lod = std::max<qreal>(0.001,
             QStyleOptionGraphicsItem::levelOfDetailFromTransform(painter->worldTransform()));
-        painter->fillRect(m_bounds, QColor(250, 251, 252));
-
-        painter->setRenderHint(QPainter::Antialiasing, false);
-        painter->setPen(QPen(QColor(45, 51, 57, 205), 0));
-        if (!m_normalPoints.isEmpty()) painter->drawPoints(m_normalPoints);
-        painter->setPen(QPen(QColor(35, 40, 45), 0));
-        if (!m_normalLines.isEmpty()) painter->drawLines(m_normalLines);
+        drawRasterTiles(painter, option ? option->exposedRect : m_bounds, lod);
 
         painter->setRenderHint(QPainter::Antialiasing, true);
         painter->setPen(QPen(QColor(224, 73, 73), 0));
@@ -285,6 +295,152 @@ public:
     }
 
 private:
+    static constexpr int TilePixels = 256;
+    static constexpr int MaximumCachedTiles = 256;
+    static constexpr double MinimumPixelsPerMeter = 0.25;
+
+    struct CachedTile {
+        QPixmap pixmap;
+        quint64 lastUsed = 0;
+    };
+
+    static quint64 gridKey(int x, int y)
+    {
+        return (quint64(quint32(x)) << 32) | quint32(y);
+    }
+
+    quint64 tileKey(int level, int x, int y) const
+    {
+        return (quint64(level & 0xff) << 56)
+             | (quint64(x & 0x0fffffff) << 28)
+             | quint64(y & 0x0fffffff);
+    }
+
+    void buildPointBuckets()
+    {
+        m_pointBuckets.clear();
+        m_pointBuckets.reserve(std::max(64, m_normalPoints.size() / 32));
+        for (const QPointF &point : m_normalPoints) {
+            const int x = int(std::floor((point.x() - m_bounds.left()) / m_bucketWorldSize));
+            const int y = int(std::floor((point.y() - m_bounds.top()) / m_bucketWorldSize));
+            m_pointBuckets[gridKey(x, y)].append(point);
+        }
+    }
+
+    int tileLevelForLod(qreal lod) const
+    {
+        if (lod <= 0.0 || m_pixelsPerMeter <= lod) return 0;
+        return std::clamp(int(std::lround(std::log2(m_pixelsPerMeter / lod))),
+                          0, m_maxTileLevel);
+    }
+
+    QPixmap renderTile(int level, int tileX, int tileY)
+    {
+        const double pixelsPerMeter = m_pixelsPerMeter / double(quint64(1) << level);
+        const double tileWorldSize = TilePixels / pixelsPerMeter;
+        const QRectF tileRect(m_bounds.left() + tileX * tileWorldSize,
+                              m_bounds.top() + tileY * tileWorldSize,
+                              tileWorldSize, tileWorldSize);
+
+        QImage image(TilePixels, TilePixels, QImage::Format_RGB32);
+        image.fill(QColor(250, 251, 252));
+        QPainter tilePainter(&image);
+        tilePainter.setRenderHint(QPainter::Antialiasing, false);
+        tilePainter.setPen(QPen(QColor(45, 51, 57, 205), 1.0));
+
+        const int firstBucketX = std::max(0, int(std::floor(
+            (tileRect.left() - m_bounds.left()) / m_bucketWorldSize)));
+        const int firstBucketY = std::max(0, int(std::floor(
+            (tileRect.top() - m_bounds.top()) / m_bucketWorldSize)));
+        const int lastBucketX = std::max(firstBucketX, int(std::floor(
+            (tileRect.right() - m_bounds.left()) / m_bucketWorldSize)));
+        const int lastBucketY = std::max(firstBucketY, int(std::floor(
+            (tileRect.bottom() - m_bounds.top()) / m_bucketWorldSize)));
+
+        QPolygonF pixels;
+        for (int bucketY = firstBucketY; bucketY <= lastBucketY; ++bucketY) {
+            for (int bucketX = firstBucketX; bucketX <= lastBucketX; ++bucketX) {
+                const auto found = m_pointBuckets.constFind(gridKey(bucketX, bucketY));
+                if (found == m_pointBuckets.cend()) continue;
+                for (const QPointF &point : found.value()) {
+                    if (!tileRect.contains(point)) continue;
+                    pixels.append(QPointF((point.x() - tileRect.left()) * pixelsPerMeter,
+                                          (point.y() - tileRect.top()) * pixelsPerMeter));
+                }
+            }
+        }
+        if (!pixels.isEmpty()) tilePainter.drawPoints(pixels);
+
+        tilePainter.setPen(QPen(QColor(35, 40, 45), 1.0));
+        for (const QLineF &line : m_normalLines) {
+            const double margin = 1.0 / pixelsPerMeter;
+            const QRectF lineBounds = QRectF(line.p1(), line.p2()).normalized()
+                                          .adjusted(-margin, -margin, margin, margin);
+            if (!tileRect.intersects(lineBounds)) continue;
+            tilePainter.drawLine(
+                QPointF((line.x1() - tileRect.left()) * pixelsPerMeter,
+                        (line.y1() - tileRect.top()) * pixelsPerMeter),
+                QPointF((line.x2() - tileRect.left()) * pixelsPerMeter,
+                        (line.y2() - tileRect.top()) * pixelsPerMeter));
+        }
+        tilePainter.end();
+        return QPixmap::fromImage(std::move(image));
+    }
+
+    void evictOldestTile()
+    {
+        if (m_tileCache.size() < MaximumCachedTiles) return;
+        auto oldest = m_tileCache.begin();
+        for (auto it = m_tileCache.begin(); it != m_tileCache.end(); ++it) {
+            if (it.value().lastUsed < oldest.value().lastUsed) oldest = it;
+        }
+        m_tileCache.erase(oldest);
+    }
+
+    void drawRasterTiles(QPainter *painter, const QRectF &exposedRect, qreal lod)
+    {
+        const QRectF visible = exposedRect.intersected(m_bounds);
+        if (visible.isEmpty()) return;
+
+        const int level = tileLevelForLod(lod);
+        const double pixelsPerMeter = m_pixelsPerMeter / double(quint64(1) << level);
+        const double tileWorldSize = TilePixels / pixelsPerMeter;
+        const int columns = std::max(1, int(std::ceil(m_bounds.width() / tileWorldSize)));
+        const int rows = std::max(1, int(std::ceil(m_bounds.height() / tileWorldSize)));
+        const int firstX = std::clamp(int(std::floor(
+            (visible.left() - m_bounds.left()) / tileWorldSize)), 0, columns - 1);
+        const int firstY = std::clamp(int(std::floor(
+            (visible.top() - m_bounds.top()) / tileWorldSize)), 0, rows - 1);
+        const int lastX = std::clamp(int(std::floor(
+            (visible.right() - m_bounds.left()) / tileWorldSize)), firstX, columns - 1);
+        const int lastY = std::clamp(int(std::floor(
+            (visible.bottom() - m_bounds.top()) / tileWorldSize)), firstY, rows - 1);
+
+        painter->save();
+        painter->setRenderHint(QPainter::SmoothPixmapTransform, true);
+        for (int y = firstY; y <= lastY; ++y) {
+            for (int x = firstX; x <= lastX; ++x) {
+                const quint64 key = tileKey(level, x, y);
+                auto found = m_tileCache.find(key);
+                if (found == m_tileCache.end()) {
+                    evictOldestTile();
+                    CachedTile tile;
+                    tile.pixmap = renderTile(level, x, y);
+                    tile.lastUsed = ++m_tileUseCounter;
+                    found = m_tileCache.insert(key, std::move(tile));
+                } else {
+                    found.value().lastUsed = ++m_tileUseCounter;
+                }
+                const QRectF target(m_bounds.left() + x * tileWorldSize,
+                                    m_bounds.top() + y * tileWorldSize,
+                                    tileWorldSize, tileWorldSize);
+                painter->drawPixmap(target, found.value().pixmap,
+                                    QRectF(0.0, 0.0, TilePixels, TilePixels));
+            }
+        }
+        painter->restore();
+    }
+
     void include(const QPointF &point)
     {
         if (!std::isfinite(point.x()) || !std::isfinite(point.y())) return;
@@ -299,6 +455,12 @@ private:
     QVector<NamedLine> m_advancedLines;
     QVector<Curve> m_curves;
     QVector<QPolygonF> m_areas;
+    QHash<quint64, QPolygonF> m_pointBuckets;
+    QHash<quint64, CachedTile> m_tileCache;
+    double m_pixelsPerMeter = 20.0;
+    double m_bucketWorldSize = 12.8;
+    int m_maxTileLevel = 7;
+    quint64 m_tileUseCounter = 0;
 };
 
 } // namespace
@@ -333,6 +495,7 @@ bool MapView::loadBytes(const QByteArray &bytes, MapSummary *summary, QString *e
         return false;
     }
     auto *item = new MapGraphicsItem(document.object(), summary);
+    item->setFlag(QGraphicsItem::ItemUsesExtendedStyleOption, true);
     m_robotPoseItem = nullptr;
     m_scene->clear();
     m_scene->addItem(item);

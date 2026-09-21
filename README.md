@@ -67,7 +67,11 @@ Viewer controls:
 - **Fit map** restores the full-map view.
 - A summary shows the map name, type, version, resolution, scan-point count, station count, path count, and area count.
 
-Large scan maps are rendered as one batched graphics item instead of creating one Qt item per scan point.
+Large scan maps use a multi-resolution 256 x 256 tile pyramid. Only tiles intersecting
+the viewport are generated, and scan points are spatially indexed so a tile never
+scans the complete map. The least-recently-used cache is capped at 256 tiles
+(approximately 64 MB), while stations, routes, live robot pose, and confidence remain
+independent vector overlays.
 
 ### Live localization confidence
 
