@@ -134,15 +134,17 @@ class RobotTrackItem final : public QGraphicsItem {
 public:
     QRectF boundingRect() const override
     {
-        return m_bounds.isValid() ? m_bounds.adjusted(-1.0, -1.0, 1.0, 1.0)
+        return m_bounds.isValid() ? m_bounds.adjusted(-20.0, -20.0, 20.0, 20.0)
                                   : QRectF();
     }
 
     void append(const QPointF &point, double confidence, bool anomaly, bool breakBefore)
     {
-        prepareGeometryChange();
+        const QPointF previous = m_previous;
+        const bool boundsChange = !m_bounds.isValid() || !m_bounds.contains(point);
+        if (boundsChange) prepareGeometryChange();
         if (!m_bounds.isValid()) m_bounds = QRectF(point, QSizeF(0.001, 0.001));
-        else m_bounds |= QRectF(point, QSizeF(0.001, 0.001));
+        else if (boundsChange) m_bounds |= QRectF(point, QSizeF(0.001, 0.001));
 
         if (m_hasPrevious && !breakBefore) {
             QPainterPath *path = &m_unknownPath;
@@ -157,11 +159,15 @@ public:
         if (anomaly) m_anomalies.append(point);
         m_previous = point;
         m_hasPrevious = true;
-        update();
+        QRectF dirty(point, QSizeF(0.001, 0.001));
+        if (!breakBefore && previous != point) dirty |= QRectF(previous, point).normalized();
+        update(dirty.adjusted(-1.0, -1.0, 1.0, 1.0));
     }
 
-    void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *) override
     {
+        const qreal lod = std::max<qreal>(0.001,
+            QStyleOptionGraphicsItem::levelOfDetailFromTransform(painter->worldTransform()));
         painter->setRenderHint(QPainter::Antialiasing, true);
         drawPath(painter, m_unknownPath, QColor(105, 112, 120, 190));
         drawPath(painter, m_highPath, QColor(36, 164, 85, 215));
@@ -172,7 +178,15 @@ public:
         anomalyPen.setCosmetic(true);
         painter->setPen(anomalyPen);
         painter->setBrush(QColor(255, 255, 255, 160));
-        for (const QPointF &point : m_anomalies) painter->drawEllipse(point, 0.35, 0.35);
+        const qreal anomalyRadius = std::clamp<qreal>(6.0 / lod, 0.001, 20.0);
+        const QRectF exposed = option ? option->exposedRect : boundingRect();
+        const QRectF anomalyExposed = exposed.adjusted(
+            -anomalyRadius, -anomalyRadius, anomalyRadius, anomalyRadius);
+        for (const QPointF &point : m_anomalies) {
+            if (anomalyExposed.contains(point)) {
+                painter->drawEllipse(point, anomalyRadius, anomalyRadius);
+            }
+        }
     }
 
 private:
@@ -483,7 +497,8 @@ private:
             (visible.bottom() - m_bounds.top()) / tileWorldSize)), firstY, rows - 1);
 
         painter->save();
-        painter->setRenderHint(QPainter::SmoothPixmapTransform, true);
+        painter->setRenderHint(QPainter::SmoothPixmapTransform,
+                               lod <= pixelsPerMeter * 2.0);
         for (int y = firstY; y <= lastY; ++y) {
             for (int x = firstX; x <= lastX; ++x) {
                 const quint64 key = tileKey(level, x, y);
@@ -567,6 +582,10 @@ bool MapView::loadBytes(const QByteArray &bytes, MapSummary *summary, QString *e
     m_scene->clear();
     m_scene->addItem(item);
     m_mapBounds = item->boundingRect();
+    m_nativePixelsPerMeter = summary->resolution > 0.0
+        ? std::clamp(2.0 / summary->resolution, 8.0, 160.0)
+        : 20.0;
+    m_maxZoom = std::min<qreal>(800.0, m_nativePixelsPerMeter * 4.0);
     m_scene->setSceneRect(m_mapBounds);
     m_hasMap = true;
     m_firstResizeAfterLoad = true;
@@ -579,6 +598,8 @@ void MapView::fitMap()
     if (!m_hasMap) return;
     resetTransform();
     fitInView(m_scene->sceneRect(), Qt::KeepAspectRatio);
+    m_maxZoom = std::min<qreal>(800.0,
+        std::max(m_nativePixelsPerMeter * 4.0, transform().m11() * 4.0));
     m_firstResizeAfterLoad = false;
 }
 
@@ -615,6 +636,7 @@ void MapView::appendRobotTrackSample(double x, double y, double confidence,
     if (!m_hasMap || !std::isfinite(x) || !std::isfinite(y)) return;
     if (!m_robotTrackItem) {
         auto *item = new RobotTrackItem;
+        item->setFlag(QGraphicsItem::ItemUsesExtendedStyleOption, true);
         item->setZValue(900.0);
         m_scene->addItem(item);
         m_robotTrackItem = item;
@@ -642,7 +664,8 @@ void MapView::wheelEvent(QWheelEvent *event)
     if (!m_hasMap) return QGraphicsView::wheelEvent(event);
     const qreal factor = event->angleDelta().y() > 0 ? 1.2 : (1.0 / 1.2);
     const qreal current = transform().m11();
-    if ((factor > 1.0 && current < 5000.0) || (factor < 1.0 && current > 0.01)) scale(factor, factor);
+    const qreal target = std::clamp(current * factor, qreal(0.01), m_maxZoom);
+    if (!qFuzzyCompare(target, current)) scale(target / current, target / current);
     event->accept();
 }
 

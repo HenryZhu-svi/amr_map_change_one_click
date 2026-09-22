@@ -66,6 +66,8 @@ Viewer controls:
 - Dragging with the mouse pans the map.
 - **Fit map** restores the full-map view.
 - A summary shows the map name, type, version, resolution, scan-point count, station count, path count, and area count.
+- Zoom is capped at four times the native tile density (and an absolute 800 px/m)
+  to prevent oversized pixmap transforms that can stall the UI.
 
 Large scan maps use a multi-resolution 256 x 256 tile pyramid. Only tiles intersecting
 the viewport are generated, and scan points are spatially indexed so a tile never

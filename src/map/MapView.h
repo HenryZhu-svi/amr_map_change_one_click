@@ -43,6 +43,8 @@ private:
     QGraphicsItem *m_robotPoseItem = nullptr;
     QGraphicsItem *m_robotTrackItem = nullptr;
     QRectF m_mapBounds;
+    qreal m_nativePixelsPerMeter = 20.0;
+    qreal m_maxZoom = 80.0;
     bool m_hasMap = false;
     bool m_firstResizeAfterLoad = false;
 };
