@@ -83,6 +83,20 @@ independent vector overlays.
 - Color the marker green at 0.8 or above, amber from 0.6 to 0.8, and red below 0.6.
 - Keep at most one location request in flight and hide the marker after three consecutive failures.
 
+### Single-robot trajectory sampling
+
+- Record every successful live-position response without spatial or time downsampling.
+- Draw the travelled path over the map: green at 80% confidence or above, amber from
+  60% to 80%, red below 60%, and gray when confidence is unavailable.
+- Keep a sampling table with timestamp, coordinates, heading, confidence, localization
+  method, travelled distance, calculated speed, confidence change, and anomaly status.
+- Flag confidence below 60%, a confidence drop of 20 percentage points, a position
+  jump of at least 0.5 m above 3 m/s, coordinates outside the map, and missing confidence.
+- Break the displayed path at position jumps so invalid coordinates do not create a
+  misleading line across the map.
+- Retain the complete in-memory session while limiting the visible table to the latest
+  2,000 rows, and export the complete session to UTF-8 CSV for validation and analysis.
+
 ### Languages
 
 - Simplified Chinese

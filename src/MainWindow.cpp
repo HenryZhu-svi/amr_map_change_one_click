@@ -4,6 +4,7 @@
 
 #include <QAction>
 #include <QAbstractSocket>
+#include <QBrush>
 #include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
@@ -42,12 +43,18 @@
 #include <QTableWidget>
 #include <QTimer>
 #include <QToolBar>
+#include <QTextStream>
 #include <QVBoxLayout>
 #include <cmath>
 #include <limits>
 
 namespace {
 constexpr int MaxConcurrentRobots = 3;
+constexpr int MaxVisibleSamples = 2000;
+constexpr double LowConfidenceThreshold = 0.60;
+constexpr double ConfidenceDropThreshold = 0.20;
+constexpr double PositionJumpSpeed = 3.0;
+constexpr double PositionJumpDistance = 0.50;
 
 QString statusName(int status, bool english)
 {
@@ -154,6 +161,19 @@ void MainWindow::buildUi()
         if (enabled) startLivePosition();
         else stopLivePosition();
     });
+    m_clearTrackAction = m_toolbar->addAction(QString());
+    connect(m_clearTrackAction, &QAction::triggered, this, [this] {
+        if (m_localizationSamples.isEmpty()) return;
+        if (QMessageBox::question(
+                this, tx("清除轨迹", "Clear track"),
+                tx("将清除本次完整采样和地图轨迹。尚未导出的数据将无法恢复，是否继续？",
+                   "This removes the complete session and map track. Unexported data cannot be recovered. Continue?"))
+            == QMessageBox::Yes) {
+            clearSamplingData();
+        }
+    });
+    m_exportSamplesAction = m_toolbar->addAction(QString(), this, &MainWindow::exportSamplingCsv);
+    m_exportSamplesAction->setEnabled(false);
     m_toolbar->addSeparator();
     m_uploadAction = m_toolbar->addAction(QString(), this, [this] { chooseAndUpload(false); });
     m_uploadSwitchAction = m_toolbar->addAction(QString(), this,
@@ -200,6 +220,21 @@ void MainWindow::buildUi()
     mapLayout->addWidget(m_livePositionLabel);
     mapLayout->addWidget(m_mapView, 1);
     m_tabs->addTab(mapPage, QString());
+
+    auto *samplingPage = new QWidget(m_tabs);
+    auto *samplingLayout = new QVBoxLayout(samplingPage);
+    samplingLayout->setContentsMargins(4, 4, 4, 4);
+    m_samplingSummaryLabel = new QLabel(samplingPage);
+    m_samplingTable = new QTableWidget(0, 11, samplingPage);
+    m_samplingTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_samplingTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_samplingTable->setAlternatingRowColors(true);
+    m_samplingTable->verticalHeader()->setVisible(false);
+    m_samplingTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
+    m_samplingTable->horizontalHeader()->setSectionResizeMode(10, QHeaderView::Stretch);
+    samplingLayout->addWidget(m_samplingSummaryLabel);
+    samplingLayout->addWidget(m_samplingTable, 1);
+    m_tabs->addTab(samplingPage, QString());
     m_tabs->addTab(m_log, QString());
 
     layout->addWidget(m_table, 3);
@@ -243,6 +278,8 @@ void MainWindow::retranslateUi()
     m_livePositionAction->setText(m_livePositionAction->isChecked()
         ? tx("停止实时置信度", "Stop live confidence")
         : tx("实时置信度", "Live confidence"));
+    m_clearTrackAction->setText(tx("清除轨迹", "Clear track"));
+    m_exportSamplesAction->setText(tx("导出采样", "Export samples"));
     m_uploadAction->setText(tx("仅上传", "Upload only"));
     m_uploadSwitchAction->setText(tx("上传、验证并切换", "Upload, verify and switch"));
     m_languageLabel->setText(tx("语言：", "Language: "));
@@ -254,7 +291,14 @@ void MainWindow::retranslateUi()
                                  "Ready. Up to 3 robots run concurrently; busy robots are skipped."));
     m_log->setPlaceholderText(tx("操作日志", "Operation log"));
     m_tabs->setTabText(0, tx("地图预览", "Map preview"));
-    m_tabs->setTabText(1, tx("操作日志", "Operation log"));
+    m_tabs->setTabText(1, tx("定位采样", "Localization samples"));
+    m_tabs->setTabText(2, tx("操作日志", "Operation log"));
+    m_samplingTable->setHorizontalHeaderLabels({QStringLiteral("#"),
+        tx("时间", "Time"), QStringLiteral("X"), QStringLiteral("Y"),
+        tx("朝向", "Heading"), tx("置信度", "Confidence"),
+        tx("定位方式", "Method"), tx("位移", "Distance"), tx("速度", "Speed"),
+        tx("评分变化", "Score change"), tx("状态", "Status")});
+    updateSamplingSummary();
     if (m_livePositionAction->isChecked()) {
         m_livePositionLabel->setText(tx("正在读取实时位置与置信度…",
                                         "Reading live position and confidence..."));
@@ -281,6 +325,12 @@ void MainWindow::retranslateUi()
             setCell(row, Result, tx("等待操作", "Waiting"));
             m_table->item(row, Result)->setData(Qt::UserRole, 1);
         } else if (result) setCell(row, Result, knownResultText(result->text(), m_english));
+    }
+    for (int row = 0; row < m_samplingTable->rowCount(); ++row) {
+        if (auto *method = m_samplingTable->item(row, 6))
+            method->setText(localizationMethodName(method->data(Qt::UserRole).toInt(), m_english));
+        if (auto *status = m_samplingTable->item(row, 10))
+            status->setText(sampleAnomalyText(status->data(Qt::UserRole).toInt()));
     }
 }
 
@@ -454,6 +504,31 @@ void MainWindow::startLivePosition()
             return;
         }
 
+        const Robot samplingRobot = robotAt(m_livePositionRow);
+        const QString sessionMap = normalizedMapName(currentMap);
+        const bool differentSession =
+            (!m_samplingRobotHost.isEmpty() && m_samplingRobotHost != samplingRobot.host)
+            || (!m_samplingMapName.isEmpty()
+                && normalizedMapName(m_samplingMapName) != sessionMap);
+        if (differentSession && !m_localizationSamples.isEmpty()
+            && QMessageBox::question(
+                   this, tx("开始新的采样", "Start a new sampling session"),
+                   tx("现有完整采样属于另一台机器人或地图。开始新采样会清除现有数据，"
+                      "请先导出需要保留的数据。是否继续？",
+                      "The complete samples belong to another robot or map. Starting a new session "
+                      "will clear them. Export any data you need first. Continue?"))
+                != QMessageBox::Yes) {
+            stopLivePosition();
+            return;
+        }
+        if (differentSession) {
+            clearSamplingData();
+        }
+        m_samplingRobotName = samplingRobot.name;
+        m_samplingRobotHost = samplingRobot.host;
+        m_samplingMapName = currentMap.isEmpty() ? m_mapSummary.name : currentMap;
+        updateSamplingSummary();
+
         m_locationTimer->start();
         pollLivePosition();
     }, 5000);
@@ -500,6 +575,7 @@ void MainWindow::pollLivePosition()
             || !json.value(QStringLiteral("y")).isDouble()
             || !json.value(QStringLiteral("angle")).isDouble()) {
             ++m_livePositionFailures;
+            ++m_failedLocationReads;
             const QString message = !result.ok ? localizedError(result.error)
                 : (!error.isEmpty() ? error : tx("位置响应缺少 x、y 或 angle。",
                                                 "The location response is missing x, y, or angle."));
@@ -507,6 +583,7 @@ void MainWindow::pollLivePosition()
                                             "Live position read failed (%1): %2")
                                              .arg(m_livePositionFailures).arg(message));
             if (m_livePositionFailures >= 3) m_mapView->clearRobotPose();
+            updateSamplingSummary();
             return;
         }
 
@@ -520,6 +597,7 @@ void MainWindow::pollLivePosition()
             if (value >= 0.0 && value <= 1.0) confidence = value;
         }
         const int method = json.value(QStringLiteral("loc_method")).toInt(-1);
+        recordLocalizationSample(robot, x, y, angle, confidence, method);
         const QString confidenceText = std::isfinite(confidence)
             ? QStringLiteral("%1%").arg(confidence * 100.0, 0, 'f', 1)
             : tx("无数据", "N/A");
@@ -539,6 +617,222 @@ void MainWindow::pollLivePosition()
                 .arg(methodText)
                 .arg(QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"))));
     }, 2000);
+}
+
+void MainWindow::recordLocalizationSample(const Robot &robot, double x, double y,
+                                          double angle, double confidence, int method)
+{
+    LocalizationSample sample;
+    sample.timestampMs = QDateTime::currentMSecsSinceEpoch();
+    sample.x = x;
+    sample.y = y;
+    sample.angle = angle;
+    sample.confidence = std::isfinite(confidence) ? confidence : -1.0;
+    sample.method = method;
+
+    if (m_samplingRobotHost.isEmpty()) {
+        m_samplingRobotName = robot.name;
+        m_samplingRobotHost = robot.host;
+        m_samplingMapName = m_mapSummary.name;
+    }
+
+    if (sample.confidence < 0.0) sample.anomalies |= MissingConfidence;
+    else if (sample.confidence < LowConfidenceThreshold) sample.anomalies |= LowConfidence;
+    if (!m_mapView->containsMapPosition(x, y)) sample.anomalies |= OutsideMap;
+
+    if (!m_localizationSamples.isEmpty()) {
+        const LocalizationSample &previous = m_localizationSamples.constLast();
+        sample.hasPrevious = true;
+        const double elapsed = (sample.timestampMs - previous.timestampMs) / 1000.0;
+        sample.distance = std::hypot(sample.x - previous.x, sample.y - previous.y);
+        sample.speed = elapsed > 0.0 ? sample.distance / elapsed : 0.0;
+        if (sample.distance >= PositionJumpDistance && sample.speed > PositionJumpSpeed)
+            sample.anomalies |= PositionJump;
+        if (sample.confidence >= 0.0 && previous.confidence >= 0.0) {
+            sample.hasConfidenceDelta = true;
+            sample.confidenceDelta = sample.confidence - previous.confidence;
+            if (sample.confidenceDelta <= -ConfidenceDropThreshold)
+                sample.anomalies |= ConfidenceDrop;
+        }
+    }
+
+    m_localizationSamples.append(sample);
+    if (sample.confidence >= 0.0) {
+        m_confidenceSum += sample.confidence;
+        m_minConfidence = std::min(m_minConfidence, sample.confidence);
+        ++m_validConfidenceSamples;
+    }
+    if (sample.anomalies != 0) ++m_anomalySamples;
+
+    m_mapView->appendRobotTrackSample(sample.x, sample.y, sample.confidence,
+                                      sample.anomalies != 0,
+                                      (sample.anomalies & PositionJump) != 0);
+
+    if (m_samplingTable->rowCount() >= MaxVisibleSamples) {
+        for (int i = 0; i < 200; ++i) m_samplingTable->removeRow(0);
+    }
+    const int row = m_samplingTable->rowCount();
+    m_samplingTable->insertRow(row);
+    const auto put = [this, row](int column, const QString &text) {
+        auto *item = new QTableWidgetItem(text);
+        item->setTextAlignment(column >= 2 && column <= 9
+                                   ? Qt::AlignRight | Qt::AlignVCenter
+                                   : Qt::AlignLeft | Qt::AlignVCenter);
+        m_samplingTable->setItem(row, column, item);
+        return item;
+    };
+    put(0, QString::number(m_localizationSamples.size()));
+    put(1, QDateTime::fromMSecsSinceEpoch(sample.timestampMs)
+               .toString(QStringLiteral("HH:mm:ss.zzz")));
+    put(2, QString::number(sample.x, 'f', 3));
+    put(3, QString::number(sample.y, 'f', 3));
+    put(4, QString::number(sample.angle, 'f', 3));
+    put(5, sample.confidence >= 0.0
+               ? QStringLiteral("%1%").arg(sample.confidence * 100.0, 0, 'f', 1)
+               : QStringLiteral("-"));
+    auto *methodItem = put(6, localizationMethodName(sample.method, m_english));
+    methodItem->setData(Qt::UserRole, sample.method);
+    put(7, sample.hasPrevious ? QString::number(sample.distance, 'f', 3)
+                              : QStringLiteral("-"));
+    put(8, sample.hasPrevious ? QString::number(sample.speed, 'f', 3)
+                              : QStringLiteral("-"));
+    put(9, sample.hasConfidenceDelta
+               ? QStringLiteral("%1%").arg(sample.confidenceDelta * 100.0, 0, 'f', 1)
+               : QStringLiteral("-"));
+    auto *statusItem = put(10, sampleAnomalyText(sample.anomalies));
+    statusItem->setData(Qt::UserRole, sample.anomalies);
+    if (sample.anomalies != 0) {
+        const QBrush background(QColor(255, 225, 225));
+        for (int column = 0; column < m_samplingTable->columnCount(); ++column)
+            m_samplingTable->item(row, column)->setBackground(background);
+    }
+    if (m_tabs->currentIndex() == 1) m_samplingTable->scrollToBottom();
+    m_exportSamplesAction->setEnabled(true);
+    updateSamplingSummary();
+}
+
+QString MainWindow::sampleAnomalyText(int anomalies) const
+{
+    if (anomalies == 0) return tx("正常", "Normal");
+    QStringList labels;
+    if (anomalies & LowConfidence) labels << tx("低置信度", "Low confidence");
+    if (anomalies & ConfidenceDrop) labels << tx("评分突降", "Score drop");
+    if (anomalies & PositionJump) labels << tx("位置跳变", "Position jump");
+    if (anomalies & OutsideMap) labels << tx("地图范围外", "Outside map");
+    if (anomalies & MissingConfidence) labels << tx("无置信度", "No confidence");
+    return labels.join(QStringLiteral("; "));
+}
+
+void MainWindow::updateSamplingSummary()
+{
+    if (!m_samplingSummaryLabel) return;
+    if (m_localizationSamples.isEmpty()) {
+        if (m_failedLocationReads > 0) {
+            m_samplingSummaryLabel->setText(
+                tx("尚无成功采样，位置读取失败：%1。",
+                   "No successful samples. Location read failures: %1.")
+                    .arg(m_failedLocationReads));
+        } else {
+            m_samplingSummaryLabel->setText(tx(
+                "尚无采样。启动实时置信度后，将完整记录本次运行的位置和评分。",
+                "No samples yet. Start live confidence to record the complete position and score stream."));
+        }
+        return;
+    }
+    const QString average = m_validConfidenceSamples > 0
+        ? QStringLiteral("%1%").arg(m_confidenceSum * 100.0 / m_validConfidenceSamples, 0, 'f', 1)
+        : QStringLiteral("-");
+    const QString minimum = m_validConfidenceSamples > 0
+        ? QStringLiteral("%1%").arg(m_minConfidence * 100.0, 0, 'f', 1)
+        : QStringLiteral("-");
+    m_samplingSummaryLabel->setText(
+        tx("机器人：%1 (%2)    地图：%3    完整采样：%4    平均置信度：%5    "
+           "最低置信度：%6    异常采样：%7    读取失败：%8",
+           "Robot: %1 (%2)    Map: %3    Complete samples: %4    Average confidence: %5    "
+           "Minimum confidence: %6    Anomalous samples: %7    Read failures: %8")
+            .arg(m_samplingRobotName)
+            .arg(m_samplingRobotHost)
+            .arg(m_samplingMapName.isEmpty() ? m_mapSummary.name : m_samplingMapName)
+            .arg(m_localizationSamples.size())
+            .arg(average)
+            .arg(minimum)
+            .arg(m_anomalySamples)
+            .arg(m_failedLocationReads));
+}
+
+void MainWindow::clearSamplingData()
+{
+    m_localizationSamples.clear();
+    m_samplingRobotName.clear();
+    m_samplingRobotHost.clear();
+    m_samplingMapName.clear();
+    m_confidenceSum = 0.0;
+    m_minConfidence = 1.0;
+    m_validConfidenceSamples = 0;
+    m_anomalySamples = 0;
+    m_failedLocationReads = 0;
+    if (m_samplingTable) m_samplingTable->setRowCount(0);
+    if (m_mapView) m_mapView->clearRobotTrack();
+    if (m_exportSamplesAction) m_exportSamplesAction->setEnabled(false);
+    updateSamplingSummary();
+}
+
+void MainWindow::exportSamplingCsv()
+{
+    if (m_localizationSamples.isEmpty()) {
+        QMessageBox::information(this, tx("没有采样", "No samples"),
+                                 tx("当前没有可以导出的定位采样。",
+                                    "There are no localization samples to export."));
+        return;
+    }
+    QString directory = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    if (directory.isEmpty()) directory = QDir::homePath();
+    QString baseName = m_samplingRobotName;
+    baseName.replace(QRegularExpression(QStringLiteral("[<>:\"/\\\\|?*]")), QStringLiteral("_"));
+    const QString suggested = QDir(directory).filePath(
+        QStringLiteral("localization_%1_%2.csv")
+            .arg(baseName, QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd_HHmmss"))));
+    const QString fileName = QFileDialog::getSaveFileName(
+        this, tx("导出定位采样", "Export localization samples"), suggested,
+        tx("CSV 文件 (*.csv)", "CSV files (*.csv)"));
+    if (fileName.isEmpty()) return;
+
+    QFile file(fileName);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::critical(this, tx("导出失败", "Export failed"), file.errorString());
+        return;
+    }
+    file.write("\xEF\xBB\xBF", 3);
+    QTextStream stream(&file);
+    const auto csv = [](QString value) {
+        value.replace(QLatin1Char('"'), QStringLiteral("\"\""));
+        return QStringLiteral("\"") + value + QStringLiteral("\"");
+    };
+    stream << "index,timestamp,robot,ip,map,x,y,angle,confidence,loc_method,"
+              "distance_m,speed_m_s,confidence_delta,anomaly\n";
+    for (qsizetype i = 0; i < m_localizationSamples.size(); ++i) {
+        const LocalizationSample &sample = m_localizationSamples.at(i);
+        stream << (i + 1) << ','
+               << csv(QDateTime::fromMSecsSinceEpoch(sample.timestampMs).toString(Qt::ISODateWithMs)) << ','
+               << csv(m_samplingRobotName) << ',' << csv(m_samplingRobotHost) << ','
+               << csv(m_samplingMapName) << ','
+               << QString::number(sample.x, 'f', 6) << ','
+               << QString::number(sample.y, 'f', 6) << ','
+               << QString::number(sample.angle, 'f', 6) << ',';
+        if (sample.confidence >= 0.0) stream << QString::number(sample.confidence, 'f', 6);
+        stream << ',' << sample.method << ',';
+        if (sample.hasPrevious) {
+            stream << QString::number(sample.distance, 'f', 6) << ','
+                   << QString::number(sample.speed, 'f', 6);
+        } else stream << ',';
+        stream << ',';
+        if (sample.hasConfidenceDelta)
+            stream << QString::number(sample.confidenceDelta, 'f', 6);
+        stream << ',' << csv(sampleAnomalyText(sample.anomalies)) << '\n';
+    }
+    file.close();
+    log(tx("定位采样已导出：%1", "Localization samples exported: %1").arg(fileName));
+    QMessageBox::information(this, tx("导出完成", "Export complete"), fileName);
 }
 
 void MainWindow::refreshSelected()

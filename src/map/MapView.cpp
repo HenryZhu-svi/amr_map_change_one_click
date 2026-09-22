@@ -130,6 +130,72 @@ private:
     QString m_label;
 };
 
+class RobotTrackItem final : public QGraphicsItem {
+public:
+    QRectF boundingRect() const override
+    {
+        return m_bounds.isValid() ? m_bounds.adjusted(-1.0, -1.0, 1.0, 1.0)
+                                  : QRectF();
+    }
+
+    void append(const QPointF &point, double confidence, bool anomaly, bool breakBefore)
+    {
+        prepareGeometryChange();
+        if (!m_bounds.isValid()) m_bounds = QRectF(point, QSizeF(0.001, 0.001));
+        else m_bounds |= QRectF(point, QSizeF(0.001, 0.001));
+
+        if (m_hasPrevious && !breakBefore) {
+            QPainterPath *path = &m_unknownPath;
+            if (std::isfinite(confidence)) {
+                if (confidence >= 0.8) path = &m_highPath;
+                else if (confidence >= 0.6) path = &m_mediumPath;
+                else path = &m_lowPath;
+            }
+            path->moveTo(m_previous);
+            path->lineTo(point);
+        }
+        if (anomaly) m_anomalies.append(point);
+        m_previous = point;
+        m_hasPrevious = true;
+        update();
+    }
+
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *, QWidget *) override
+    {
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        drawPath(painter, m_unknownPath, QColor(105, 112, 120, 190));
+        drawPath(painter, m_highPath, QColor(36, 164, 85, 215));
+        drawPath(painter, m_mediumPath, QColor(239, 174, 29, 225));
+        drawPath(painter, m_lowPath, QColor(220, 60, 55, 230));
+
+        QPen anomalyPen(QColor(170, 25, 35), 2.0);
+        anomalyPen.setCosmetic(true);
+        painter->setPen(anomalyPen);
+        painter->setBrush(QColor(255, 255, 255, 160));
+        for (const QPointF &point : m_anomalies) painter->drawEllipse(point, 0.35, 0.35);
+    }
+
+private:
+    static void drawPath(QPainter *painter, const QPainterPath &path, const QColor &color)
+    {
+        if (path.isEmpty()) return;
+        QPen pen(color, 3.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+        pen.setCosmetic(true);
+        painter->setPen(pen);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawPath(path);
+    }
+
+    QRectF m_bounds;
+    QPointF m_previous;
+    QPainterPath m_highPath;
+    QPainterPath m_mediumPath;
+    QPainterPath m_lowPath;
+    QPainterPath m_unknownPath;
+    QPolygonF m_anomalies;
+    bool m_hasPrevious = false;
+};
+
 class MapGraphicsItem final : public QGraphicsItem {
 public:
     explicit MapGraphicsItem(const QJsonObject &root, MapSummary *summary)
@@ -497,9 +563,11 @@ bool MapView::loadBytes(const QByteArray &bytes, MapSummary *summary, QString *e
     auto *item = new MapGraphicsItem(document.object(), summary);
     item->setFlag(QGraphicsItem::ItemUsesExtendedStyleOption, true);
     m_robotPoseItem = nullptr;
+    m_robotTrackItem = nullptr;
     m_scene->clear();
     m_scene->addItem(item);
-    m_scene->setSceneRect(item->boundingRect());
+    m_mapBounds = item->boundingRect();
+    m_scene->setSceneRect(m_mapBounds);
     m_hasMap = true;
     m_firstResizeAfterLoad = true;
     fitMap();
@@ -539,6 +607,34 @@ void MapView::setRobotPose(double x, double y, double angle, double confidence,
 void MapView::clearRobotPose()
 {
     if (m_robotPoseItem) m_robotPoseItem->setVisible(false);
+}
+
+void MapView::appendRobotTrackSample(double x, double y, double confidence,
+                                     bool anomaly, bool breakBefore)
+{
+    if (!m_hasMap || !std::isfinite(x) || !std::isfinite(y)) return;
+    if (!m_robotTrackItem) {
+        auto *item = new RobotTrackItem;
+        item->setZValue(900.0);
+        m_scene->addItem(item);
+        m_robotTrackItem = item;
+    }
+    static_cast<RobotTrackItem *>(m_robotTrackItem)->append(
+        QPointF(x, -y), confidence, anomaly, breakBefore);
+}
+
+void MapView::clearRobotTrack()
+{
+    if (!m_robotTrackItem) return;
+    m_scene->removeItem(m_robotTrackItem);
+    delete m_robotTrackItem;
+    m_robotTrackItem = nullptr;
+}
+
+bool MapView::containsMapPosition(double x, double y) const
+{
+    return m_hasMap && std::isfinite(x) && std::isfinite(y)
+        && m_mapBounds.contains(QPointF(x, -y));
 }
 
 void MapView::wheelEvent(QWheelEvent *event)

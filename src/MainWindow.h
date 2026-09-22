@@ -8,6 +8,7 @@
 #include <QHash>
 #include <QQueue>
 #include <QStringList>
+#include <QVector>
 
 class QLabel;
 class QPlainTextEdit;
@@ -26,6 +27,28 @@ public:
 
 private:
     enum Column { Selected, Name, Ip, Online, Task, CurrentMap, Md5, Result, ColumnCount };
+    enum SampleAnomaly {
+        LowConfidence = 0x01,
+        ConfidenceDrop = 0x02,
+        PositionJump = 0x04,
+        OutsideMap = 0x08,
+        MissingConfidence = 0x10
+    };
+
+    struct LocalizationSample {
+        qint64 timestampMs = 0;
+        double x = 0.0;
+        double y = 0.0;
+        double angle = 0.0;
+        double confidence = -1.0;
+        double distance = 0.0;
+        double speed = 0.0;
+        double confidenceDelta = 0.0;
+        int method = -1;
+        int anomalies = 0;
+        bool hasPrevious = false;
+        bool hasConfidenceDelta = false;
+    };
 
     void buildUi();
     void retranslateUi();
@@ -39,6 +62,12 @@ private:
     void startLivePosition();
     void stopLivePosition(bool clearMarker = true);
     void pollLivePosition();
+    void recordLocalizationSample(const Robot &robot, double x, double y,
+                                  double angle, double confidence, int method);
+    void clearSamplingData();
+    void exportSamplingCsv();
+    void updateSamplingSummary();
+    QString sampleAnomalyText(int anomalies) const;
     void downloadMap();
     void resolveDownloadMap(int row);
     void findDownloadMapByMd5(int row, const QStringList &storedFiles,
@@ -82,10 +111,14 @@ private:
     QAction *m_openMapAction = nullptr;
     QAction *m_fitMapAction = nullptr;
     QAction *m_livePositionAction = nullptr;
+    QAction *m_clearTrackAction = nullptr;
+    QAction *m_exportSamplesAction = nullptr;
     QAction *m_uploadAction = nullptr;
     QAction *m_uploadSwitchAction = nullptr;
     QTimer *m_locationTimer = nullptr;
     QLabel *m_livePositionLabel = nullptr;
+    QLabel *m_samplingSummaryLabel = nullptr;
+    QTableWidget *m_samplingTable = nullptr;
     QQueue<int> m_pendingRows;
     int m_activeOperations = 0;
     int m_completedOperations = 0;
@@ -98,6 +131,15 @@ private:
     int m_livePositionSession = 0;
     int m_livePositionFailures = 0;
     bool m_locationRequestPending = false;
+    QVector<LocalizationSample> m_localizationSamples;
+    QString m_samplingRobotName;
+    QString m_samplingRobotHost;
+    QString m_samplingMapName;
+    double m_confidenceSum = 0.0;
+    double m_minConfidence = 1.0;
+    int m_validConfidenceSamples = 0;
+    int m_anomalySamples = 0;
+    int m_failedLocationReads = 0;
     bool m_switchAfterUpload = false;
     bool m_english = false;
     bool m_hasMapSummary = false;

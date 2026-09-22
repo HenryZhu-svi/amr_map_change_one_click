@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QGraphicsView>
+#include <QRectF>
 #include <QString>
 
 class QGraphicsScene;
@@ -28,6 +29,10 @@ public:
     void setRobotPose(double x, double y, double angle, double confidence,
                       const QString &label);
     void clearRobotPose();
+    void appendRobotTrackSample(double x, double y, double confidence,
+                                bool anomaly, bool breakBefore = false);
+    void clearRobotTrack();
+    bool containsMapPosition(double x, double y) const;
 
 protected:
     void wheelEvent(QWheelEvent *event) override;
@@ -36,6 +41,8 @@ protected:
 private:
     QGraphicsScene *m_scene = nullptr;
     QGraphicsItem *m_robotPoseItem = nullptr;
+    QGraphicsItem *m_robotTrackItem = nullptr;
+    QRectF m_mapBounds;
     bool m_hasMap = false;
     bool m_firstResizeAfterLoad = false;
 };
