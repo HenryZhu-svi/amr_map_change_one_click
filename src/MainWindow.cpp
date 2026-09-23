@@ -35,6 +35,7 @@
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QSettings>
+#include <QShortcut>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QStandardPaths>
@@ -167,7 +168,7 @@ void MainWindow::buildUi()
     m_refreshAction = m_toolbar->addAction(QString(), this, &MainWindow::refreshSelected);
     m_downloadAction = m_toolbar->addAction(QString(), this, &MainWindow::downloadMap);
     m_openMapAction = m_toolbar->addAction(QString(), this, &MainWindow::openMapFile);
-    m_fitMapAction = m_toolbar->addAction(QString(), this, [this] { m_mapView->fitMap(); });
+    m_showMapAction = m_toolbar->addAction(QString(), this, [this] { showMapWindow(); });
     m_livePositionAction = m_toolbar->addAction(QString());
     m_livePositionAction->setCheckable(true);
     connect(m_livePositionAction, &QAction::toggled, this, [this](bool enabled) {
@@ -221,20 +222,34 @@ void MainWindow::buildUi()
     m_log->setReadOnly(true);
     m_log->setMaximumBlockCount(1500);
 
-    m_tabs = new QTabWidget(central);
-    auto *mapPage = new QWidget(m_tabs);
-    auto *mapLayout = new QVBoxLayout(mapPage);
-    mapLayout->setContentsMargins(4, 4, 4, 4);
-    m_mapInfoLabel = new QLabel(mapPage);
-    m_livePositionLabel = new QLabel(mapPage);
-    m_heatmapSummaryLabel = new QLabel(mapPage);
+    m_mapWindow = new QWidget(this, Qt::Window);
+    m_mapWindow->setWindowIcon(windowIcon());
+    auto *mapLayout = new QVBoxLayout(m_mapWindow);
+    mapLayout->setContentsMargins(10, 8, 10, 10);
+    auto *mapControls = new QHBoxLayout;
+    m_fitMapButton = new QPushButton(m_mapWindow);
+    m_closeMapButton = new QPushButton(m_mapWindow);
+    mapControls->addWidget(m_fitMapButton);
+    mapControls->addStretch();
+    mapControls->addWidget(m_closeMapButton);
+    connect(m_fitMapButton, &QPushButton::clicked, this, [this] { m_mapView->fitMap(); });
+    connect(m_closeMapButton, &QPushButton::clicked, this, [this] {
+        m_mapWindow->hide();
+        raise();
+        activateWindow();
+    });
+    auto *escapeShortcut = new QShortcut(QKeySequence(Qt::Key_Escape), m_mapWindow);
+    connect(escapeShortcut, &QShortcut::activated, m_mapWindow, &QWidget::showNormal);
+    m_mapInfoLabel = new QLabel(m_mapWindow);
+    m_livePositionLabel = new QLabel(m_mapWindow);
+    m_heatmapSummaryLabel = new QLabel(m_mapWindow);
     m_heatmapSummaryLabel->setWordWrap(true);
     auto *heatmapControls = new QHBoxLayout;
-    m_importHeatmapButton = new QPushButton(mapPage);
-    m_toggleHeatmapButton = new QPushButton(mapPage);
+    m_importHeatmapButton = new QPushButton(m_mapWindow);
+    m_toggleHeatmapButton = new QPushButton(m_mapWindow);
     m_toggleHeatmapButton->setCheckable(true);
     m_toggleHeatmapButton->setEnabled(false);
-    m_clearHeatmapButton = new QPushButton(mapPage);
+    m_clearHeatmapButton = new QPushButton(m_mapWindow);
     m_clearHeatmapButton->setEnabled(false);
     heatmapControls->addWidget(m_importHeatmapButton);
     heatmapControls->addWidget(m_toggleHeatmapButton);
@@ -252,15 +267,15 @@ void MainWindow::buildUi()
     });
     connect(m_clearHeatmapButton, &QPushButton::clicked,
             this, &MainWindow::clearHeatmapData);
-    m_mapView = new MapView(mapPage);
-    m_mapView->setMinimumHeight(260);
+    m_mapView = new MapView(m_mapWindow);
+    mapLayout->addLayout(mapControls);
     mapLayout->addWidget(m_mapInfoLabel);
     mapLayout->addWidget(m_livePositionLabel);
     mapLayout->addLayout(heatmapControls);
     mapLayout->addWidget(m_heatmapSummaryLabel);
     mapLayout->addWidget(m_mapView, 1);
-    m_tabs->addTab(mapPage, QString());
 
+    m_tabs = new QTabWidget(central);
     auto *samplingPage = new QWidget(m_tabs);
     auto *samplingLayout = new QVBoxLayout(samplingPage);
     samplingLayout->setContentsMargins(4, 4, 4, 4);
@@ -314,7 +329,10 @@ void MainWindow::retranslateUi()
     m_refreshAction->setText(tx("刷新状态", "Refresh status"));
     m_downloadAction->setText(tx("下载当前地图", "Download current map"));
     m_openMapAction->setText(tx("打开地图", "Open map"));
-    m_fitMapAction->setText(tx("适应窗口", "Fit map"));
+    m_showMapAction->setText(tx("地图窗口", "Map window"));
+    m_mapWindow->setWindowTitle(tx("地图与置信度热力图", "Map and confidence heatmap"));
+    m_fitMapButton->setText(tx("适应地图", "Fit map"));
+    m_closeMapButton->setText(tx("返回主窗口", "Back to main window"));
     m_livePositionAction->setText(m_livePositionAction->isChecked()
         ? tx("停止实时置信度", "Stop live confidence")
         : tx("实时置信度", "Live confidence"));
@@ -336,9 +354,8 @@ void MainWindow::retranslateUi()
         m_batchLabel->setText(tx("就绪。批量操作默认并发 3 台，繁忙机器人会跳过。",
                                  "Ready. Up to 3 robots run concurrently; busy robots are skipped."));
     m_log->setPlaceholderText(tx("操作日志", "Operation log"));
-    m_tabs->setTabText(0, tx("地图预览", "Map preview"));
-    m_tabs->setTabText(1, tx("定位采样", "Localization samples"));
-    m_tabs->setTabText(2, tx("操作日志", "Operation log"));
+    m_tabs->setTabText(0, tx("定位采样", "Localization samples"));
+    m_tabs->setTabText(1, tx("操作日志", "Operation log"));
     m_samplingTable->setHorizontalHeaderLabels({QStringLiteral("#"),
         tx("时间", "Time"), QStringLiteral("X"), QStringLiteral("Y"),
         tx("朝向", "Heading"), tx("置信度", "Confidence"),
@@ -510,6 +527,7 @@ void MainWindow::startLivePosition()
         return;
     }
 
+    showMapWindow();
     m_livePositionRow = rows.first();
     m_livePositionFailures = 0;
     m_locationRequestPending = true;
@@ -528,7 +546,7 @@ void MainWindow::startLivePosition()
         if (!result.ok || !parseJson(result.payload, &json, &error)
             || !responseSucceeded(json, &error)) {
             const QString message = result.ok ? error : localizedError(result.error);
-            QMessageBox::warning(this, tx("无法启动实时置信度", "Cannot start live confidence"),
+            QMessageBox::warning(mapDialogParent(), tx("无法启动实时置信度", "Cannot start live confidence"),
                                  message);
             stopLivePosition();
             return;
@@ -540,7 +558,7 @@ void MainWindow::startLivePosition()
         setCell(m_livePositionRow, Md5, currentMd5.isEmpty() ? QStringLiteral("-") : currentMd5);
         const QString previewMap = normalizedMapName(m_mapSummary.name);
         if (!previewMap.isEmpty() && normalizedMapName(currentMap) != previewMap) {
-            QMessageBox::warning(this, tx("地图不一致", "Map mismatch"),
+            QMessageBox::warning(mapDialogParent(), tx("地图不一致", "Map mismatch"),
                 tx("机器人当前地图是 %1，预览地图是 %2。\n"
                    "请打开该机器人的当前地图后再启动。",
                    "The robot is using map %1, while the preview shows %2.\n"
@@ -558,7 +576,7 @@ void MainWindow::startLivePosition()
                 && normalizedMapName(m_samplingMapName) != sessionMap);
         if (differentSession && !m_localizationSamples.isEmpty()
             && QMessageBox::question(
-                   this, tx("开始新的采样", "Start a new sampling session"),
+                   mapDialogParent(), tx("开始新的采样", "Start a new sampling session"),
                    tx("现有完整采样属于另一台机器人或地图。开始新采样会清除现有数据，"
                       "请先导出需要保留的数据。是否继续？",
                       "The complete samples belong to another robot or map. Starting a new session "
@@ -752,7 +770,7 @@ void MainWindow::recordLocalizationSample(const Robot &robot, double x, double y
         for (int column = 0; column < m_samplingTable->columnCount(); ++column)
             m_samplingTable->item(row, column)->setBackground(background);
     }
-    if (m_tabs->currentIndex() == 1) m_samplingTable->scrollToBottom();
+    if (m_tabs->currentIndex() == 0) m_samplingTable->scrollToBottom();
     m_exportSamplesAction->setEnabled(true);
     updateSamplingSummary();
 }
@@ -884,13 +902,13 @@ void MainWindow::exportSamplingCsv()
 void MainWindow::importHeatmapCsv()
 {
     if (!m_mapView->hasMap() || m_mapSummary.name.trimmed().isEmpty()) {
-        QMessageBox::information(this, tx("请先打开地图", "Open a map first"),
+        QMessageBox::information(mapDialogParent(), tx("请先打开地图", "Open a map first"),
             tx("请先打开对应的机器人地图，再导入定位采样。",
                "Open the matching robot map before importing localization samples."));
         return;
     }
     const QStringList files = QFileDialog::getOpenFileNames(
-        this, tx("导入定位采样", "Import localization samples"),
+        mapDialogParent(), tx("导入定位采样", "Import localization samples"),
         QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
         tx("采样 CSV (*.csv)", "Sample CSV files (*.csv)"));
     if (files.isEmpty()) return;
@@ -909,12 +927,12 @@ void MainWindow::importHeatmapCsv()
         m_importHeatmapButton->setEnabled(true);
         if (!result.error.isEmpty()) {
             updateHeatmapSummary();
-            QMessageBox::warning(this, tx("导入失败", "Import failed"), result.error);
+            QMessageBox::warning(mapDialogParent(), tx("导入失败", "Import failed"), result.error);
             return;
         }
         if (result.cells.isEmpty()) {
             updateHeatmapSummary();
-            QMessageBox::information(this, tx("没有移动样本", "No moving samples"),
+            QMessageBox::information(mapDialogParent(), tx("没有移动样本", "No moving samples"),
                 tx("CSV 中没有符合条件的移动采样，无法生成热力图。",
                    "The CSV contains no qualifying moving samples for a heatmap."));
             return;
@@ -929,7 +947,7 @@ void MainWindow::importHeatmapCsv()
         const int renderedCells = m_mapView->setHeatmapCells(m_heatmapCells);
         if (renderedCells == 0) {
             clearHeatmapData();
-            QMessageBox::warning(this, tx("无法显示热力图", "Cannot display heatmap"),
+            QMessageBox::warning(mapDialogParent(), tx("无法显示热力图", "Cannot display heatmap"),
                 tx("采样坐标没有落在当前地图的可通行区域，请核对地图版本和坐标。",
                    "The sample coordinates do not fall in free space on this map. "
                    "Check the map version and coordinates."));
@@ -1256,12 +1274,13 @@ void MainWindow::downloadStoredMap(int row, const QString &storedFileName)
         log(tx("地图已保存：%1", "Map saved to: %1").arg(fileName));
         MapSummary summary;
         QString previewError;
+        bool previewReady = false;
         if (m_mapView->loadBytes(result.payload, &summary, &previewError)) {
             m_mapSummary = summary;
             m_hasMapSummary = true;
             clearHeatmapData();
             updateMapSummary();
-            m_tabs->setCurrentIndex(0);
+            previewReady = true;
         } else {
             log(tx("地图已下载，但预览解析失败：%1",
                    "The map was downloaded, but preview parsing failed: %1").arg(previewError));
@@ -1270,6 +1289,7 @@ void MainWindow::downloadStoredMap(int row, const QString &storedFileName)
             tx("当前地图已保存到：\n%1\n\n如需改名，请在文件管理器中操作。",
                "The current map was saved to:\n%1\n\nRename it later in your file manager if needed.")
                 .arg(fileName));
+        if (previewReady) showMapWindow(true);
     }, 60000);
 }
 
@@ -1295,8 +1315,24 @@ void MainWindow::openMapFile()
     m_hasMapSummary = true;
     clearHeatmapData();
     updateMapSummary();
-    m_tabs->setCurrentIndex(0);
+    showMapWindow(true);
     log(tx("已打开地图：%1", "Opened map: %1").arg(fileName));
+}
+
+void MainWindow::showMapWindow(bool fit)
+{
+    if (!m_mapWindow) return;
+    m_mapWindow->showFullScreen();
+    m_mapWindow->raise();
+    m_mapWindow->activateWindow();
+    if (fit && m_mapView->hasMap()) {
+        QTimer::singleShot(0, m_mapView, [this] { m_mapView->fitMap(); });
+    }
+}
+
+QWidget *MainWindow::mapDialogParent()
+{
+    return m_mapWindow && m_mapWindow->isVisible() ? m_mapWindow : this;
 }
 
 void MainWindow::updateMapSummary()

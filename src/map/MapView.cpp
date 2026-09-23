@@ -748,8 +748,8 @@ int MapView::setHeatmapCells(const QVector<ConfidenceHeatmapCell> &cells)
     auto *map = static_cast<MapGraphicsItem *>(m_mapItem);
     map->prepareOccupancy();
     constexpr double displayCell = 0.25;
-    constexpr double radius = 0.75;
-    constexpr double sigma = 0.32;
+    constexpr double radius = 1.0;
+    constexpr double sigma = 0.45;
     struct Accumulator {
         double weightedScore = 0.0;
         double weight = 0.0;
@@ -766,8 +766,8 @@ int MapView::setHeatmapCells(const QVector<ConfidenceHeatmapCell> &cells)
         if (!m_mapBounds.contains(source) || map->occupiedNear(source)) continue;
         const int centerX = int(std::floor(source.x() / displayCell));
         const int centerY = int(std::floor(source.y() / displayCell));
-        for (int dy = -3; dy <= 3; ++dy) {
-            for (int dx = -3; dx <= 3; ++dx) {
+        for (int dy = -4; dy <= 4; ++dy) {
+            for (int dx = -4; dx <= 4; ++dx) {
                 const int x = centerX + dx;
                 const int y = centerY + dy;
                 const QPointF target((x + 0.5) * displayCell, (y + 0.5) * displayCell);
@@ -792,19 +792,15 @@ int MapView::setHeatmapCells(const QVector<ConfidenceHeatmapCell> &cells)
         const Accumulator &acc = it.value();
         if (acc.weight <= 0.0) continue;
         const double confidence = std::clamp(acc.weightedScore / acc.weight, 0.0, 1.0);
-        QColor color;
-        if (confidence < 0.6) {
-            color = QColor(220, 60, 55);
-        } else if (confidence < 0.8) {
-            const double t = (confidence - 0.6) / 0.2;
-            color = QColor(239, int(174 + 45 * t), int(29 + 20 * t));
-        } else {
-            const double t = std::min(1.0, (confidence - 0.8) / 0.2);
-            color = QColor(int(239 - 203 * t), int(219 - 55 * t),
-                           int(49 + 36 * t));
-        }
+        // Discrete, saturated bands stay distinguishable over monochrome scans.
+        const QColor colorBase = confidence < 0.6 ? QColor(215, 35, 48)
+                               : confidence < 0.8 ? QColor(250, 160, 0)
+                                                  : QColor(15, 165, 75);
+        QColor color = colorBase;
         const double density = std::min(1.0, acc.weight);
-        color.setAlpha(int((acc.maxVisits >= 2 ? 150 : 65) * density));
+        const int opacity = acc.maxVisits < 2 ? 80
+                          : confidence < 0.6 ? 225 : 195;
+        color.setAlpha(int(opacity * density));
         const int x = qint32(it.key() >> 32);
         const int y = qint32(it.key() & 0xffffffffu);
         displayCells.append({QRectF(x * displayCell, y * displayCell,

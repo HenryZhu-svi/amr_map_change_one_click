@@ -61,10 +61,12 @@ Displayed layers include:
 
 Viewer controls:
 
-- **Open map** loads a local `.smap` or JSON file.
+- **Open map** loads a local `.smap` or JSON file and opens the separate full-screen map window.
+- **Map window** reopens the map without reloading it. **Back to main window** hides it;
+  Esc leaves full-screen mode.
 - The mouse wheel zooms in and out.
 - Dragging with the mouse pans the map.
-- **Fit map** restores the full-map view.
+- **Fit map** in the map window restores the full-map view.
 - A summary shows the map name, type, version, resolution, scan-point count, station count, path count, and area count.
 - Zoom is capped at four times the native tile density (and an absolute 800 px/m)
   to prevent oversized pixmap transforms that can stall the UI.
@@ -111,9 +113,11 @@ independent vector overlays.
   score, regardless of how many responses were recorded there.
 - Use the median of visit scores as the cell score. Cells with only one visit are
   shown faintly; areas without sampled movement remain transparent.
-- Smooth the display into 0.25 m cells with a 0.75 m maximum radius. Map scan
+- Smooth the display into 0.25 m cells with a 1.0 m maximum radius. Map scan
   points stop smoothing through occupied locations. Toggle between track and
-  heatmap views in the map preview.
+  heatmap views in the full-screen map window. Saturated red (<60%), amber
+  (60–80%), and green (>=80%) bands emphasize the difference; repeated visits
+  are more opaque than a single visit.
 - Map identity is checked by name because the current CSV format does not
   include a map checksum. Confirm that the previewed map is the same revision
   used when the data was collected.

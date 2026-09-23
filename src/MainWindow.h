@@ -78,6 +78,8 @@ private:
                               const QString &expectedMd5, int fallbackIndex = -1);
     void downloadStoredMap(int row, const QString &storedFileName);
     void openMapFile();
+    void showMapWindow(bool fit = false);
+    QWidget *mapDialogParent();
     void updateMapSummary();
     void chooseAndUpload(bool switchAfterUpload);
     void startBatch(const QByteArray &mapBytes, const QString &mapName,
@@ -106,6 +108,7 @@ private:
     QLabel *m_mapInfoLabel = nullptr;
     QToolBar *m_toolbar = nullptr;
     QTabWidget *m_tabs = nullptr;
+    QWidget *m_mapWindow = nullptr;
     MapView *m_mapView = nullptr;
     QComboBox *m_languageCombo = nullptr;
     QAction *m_addAction = nullptr;
@@ -113,7 +116,7 @@ private:
     QAction *m_refreshAction = nullptr;
     QAction *m_downloadAction = nullptr;
     QAction *m_openMapAction = nullptr;
-    QAction *m_fitMapAction = nullptr;
+    QAction *m_showMapAction = nullptr;
     QAction *m_livePositionAction = nullptr;
     QAction *m_clearTrackAction = nullptr;
     QAction *m_exportSamplesAction = nullptr;
@@ -127,6 +130,8 @@ private:
     QPushButton *m_importHeatmapButton = nullptr;
     QPushButton *m_toggleHeatmapButton = nullptr;
     QPushButton *m_clearHeatmapButton = nullptr;
+    QPushButton *m_fitMapButton = nullptr;
+    QPushButton *m_closeMapButton = nullptr;
     QQueue<int> m_pendingRows;
     int m_activeOperations = 0;
     int m_completedOperations = 0;
