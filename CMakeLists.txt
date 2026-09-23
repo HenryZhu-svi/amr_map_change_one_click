@@ -9,7 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-find_package(Qt6 6.2 REQUIRED COMPONENTS Core Widgets Network)
+find_package(Qt6 6.2 REQUIRED COMPONENTS Core Widgets Network Concurrent)
 
 qt_add_executable(amr-map-manager
     src/main.cpp
@@ -22,6 +22,8 @@ qt_add_executable(amr-map-manager
     src/network/RequestJob.cpp
     src/map/MapView.h
     src/map/MapView.cpp
+    src/map/LocalizationHeatmap.h
+    src/map/LocalizationHeatmap.cpp
     resources.qrc
 )
 
@@ -35,6 +37,7 @@ target_link_libraries(amr-map-manager PRIVATE
     Qt6::Core
     Qt6::Widgets
     Qt6::Network
+    Qt6::Concurrent
 )
 
 if(WIN32)

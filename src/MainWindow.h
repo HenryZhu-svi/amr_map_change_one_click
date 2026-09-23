@@ -19,6 +19,7 @@ class QComboBox;
 class QToolBar;
 class QTabWidget;
 class QTimer;
+class QPushButton;
 
 class MainWindow final : public QMainWindow {
     Q_OBJECT
@@ -66,6 +67,9 @@ private:
                                   double angle, double confidence, int method);
     void clearSamplingData();
     void exportSamplingCsv();
+    void importHeatmapCsv();
+    void clearHeatmapData();
+    void updateHeatmapSummary();
     void updateSamplingSummary();
     QString sampleAnomalyText(int anomalies) const;
     void downloadMap();
@@ -117,8 +121,12 @@ private:
     QAction *m_uploadSwitchAction = nullptr;
     QTimer *m_locationTimer = nullptr;
     QLabel *m_livePositionLabel = nullptr;
+    QLabel *m_heatmapSummaryLabel = nullptr;
     QLabel *m_samplingSummaryLabel = nullptr;
     QTableWidget *m_samplingTable = nullptr;
+    QPushButton *m_importHeatmapButton = nullptr;
+    QPushButton *m_toggleHeatmapButton = nullptr;
+    QPushButton *m_clearHeatmapButton = nullptr;
     QQueue<int> m_pendingRows;
     int m_activeOperations = 0;
     int m_completedOperations = 0;
@@ -140,6 +148,13 @@ private:
     int m_validConfidenceSamples = 0;
     int m_anomalySamples = 0;
     int m_failedLocationReads = 0;
+    QVector<ConfidenceHeatmapCell> m_heatmapCells;
+    int m_heatmapRowCount = 0;
+    int m_heatmapMovingSamples = 0;
+    int m_heatmapRejectedSamples = 0;
+    int m_heatmapFiles = 0;
+    QString m_heatmapRobotName;
+    int m_heatmapImportSession = 0;
     bool m_switchAfterUpload = false;
     bool m_english = false;
     bool m_hasMapSummary = false;

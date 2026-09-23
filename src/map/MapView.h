@@ -1,8 +1,11 @@
 #pragma once
 
+#include "LocalizationHeatmap.h"
+
 #include <QGraphicsView>
 #include <QRectF>
 #include <QString>
+#include <QVector>
 
 class QGraphicsScene;
 class QGraphicsItem;
@@ -32,7 +35,11 @@ public:
     void appendRobotTrackSample(double x, double y, double confidence,
                                 bool anomaly, bool breakBefore = false);
     void clearRobotTrack();
+    void setRobotTrackVisible(bool visible);
     bool containsMapPosition(double x, double y) const;
+    int setHeatmapCells(const QVector<ConfidenceHeatmapCell> &cells);
+    void clearHeatmap();
+    void setHeatmapVisible(bool visible);
 
 protected:
     void wheelEvent(QWheelEvent *event) override;
@@ -42,9 +49,12 @@ private:
     QGraphicsScene *m_scene = nullptr;
     QGraphicsItem *m_robotPoseItem = nullptr;
     QGraphicsItem *m_robotTrackItem = nullptr;
+    QGraphicsItem *m_mapItem = nullptr;
+    QGraphicsItem *m_heatmapItem = nullptr;
     QRectF m_mapBounds;
     qreal m_nativePixelsPerMeter = 20.0;
     qreal m_maxZoom = 80.0;
     bool m_hasMap = false;
     bool m_firstResizeAfterLoad = false;
+    bool m_trackVisible = true;
 };

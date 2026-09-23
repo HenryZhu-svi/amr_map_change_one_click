@@ -99,6 +99,25 @@ independent vector overlays.
 - Retain the complete in-memory session while limiting the visible table to the latest
   2,000 rows, and export the complete session to UTF-8 CSV for validation and analysis.
 
+### Localization confidence heatmap
+
+- Open the matching `.smap` map, then import one or more localization CSV exports
+  from the same robot and map. CSV reading and visit aggregation run in the background.
+- Ignore stationary repeats for scoring. Only valid samples with at least 0.05 m
+  of recorded movement contribute to 0.5 m source cells; samples above 3 m/s
+  are rejected as position jumps.
+- Treat a return to the same cell after 2 m of travel, a 60-second gap, or a new
+  CSV file as another visit. A visit contributes one 20th-percentile confidence
+  score, regardless of how many responses were recorded there.
+- Use the median of visit scores as the cell score. Cells with only one visit are
+  shown faintly; areas without sampled movement remain transparent.
+- Smooth the display into 0.25 m cells with a 0.75 m maximum radius. Map scan
+  points stop smoothing through occupied locations. Toggle between track and
+  heatmap views in the map preview.
+- Map identity is checked by name because the current CSV format does not
+  include a map checksum. Confirm that the previewed map is the same revision
+  used when the data was collected.
+
 ### Languages
 
 - Simplified Chinese

@@ -18,7 +18,9 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFutureWatcher>
 #include <QHeaderView>
+#include <QHBoxLayout>
 #include <QHostAddress>
 #include <QIcon>
 #include <QJsonArray>
@@ -45,6 +47,7 @@
 #include <QToolBar>
 #include <QTextStream>
 #include <QVBoxLayout>
+#include <QtConcurrent>
 #include <cmath>
 #include <limits>
 
@@ -55,6 +58,16 @@ constexpr double LowConfidenceThreshold = 0.60;
 constexpr double ConfidenceDropThreshold = 0.20;
 constexpr double PositionJumpSpeed = 3.0;
 constexpr double PositionJumpDistance = 0.50;
+
+struct HeatmapImportResult {
+    QVector<ConfidenceHeatmapCell> cells;
+    QString robotName;
+    QString error;
+    int rows = 0;
+    int movingSamples = 0;
+    int rejectedSamples = 0;
+    int files = 0;
+};
 
 QString statusName(int status, bool english)
 {
@@ -214,10 +227,37 @@ void MainWindow::buildUi()
     mapLayout->setContentsMargins(4, 4, 4, 4);
     m_mapInfoLabel = new QLabel(mapPage);
     m_livePositionLabel = new QLabel(mapPage);
+    m_heatmapSummaryLabel = new QLabel(mapPage);
+    m_heatmapSummaryLabel->setWordWrap(true);
+    auto *heatmapControls = new QHBoxLayout;
+    m_importHeatmapButton = new QPushButton(mapPage);
+    m_toggleHeatmapButton = new QPushButton(mapPage);
+    m_toggleHeatmapButton->setCheckable(true);
+    m_toggleHeatmapButton->setEnabled(false);
+    m_clearHeatmapButton = new QPushButton(mapPage);
+    m_clearHeatmapButton->setEnabled(false);
+    heatmapControls->addWidget(m_importHeatmapButton);
+    heatmapControls->addWidget(m_toggleHeatmapButton);
+    heatmapControls->addWidget(m_clearHeatmapButton);
+    heatmapControls->addStretch();
+    connect(m_importHeatmapButton, &QPushButton::clicked,
+            this, &MainWindow::importHeatmapCsv);
+    connect(m_toggleHeatmapButton, &QPushButton::toggled,
+            this, [this](bool visible) {
+        m_mapView->setHeatmapVisible(visible);
+        m_mapView->setRobotTrackVisible(!visible);
+        m_toggleHeatmapButton->setText(visible
+            ? tx("显示轨迹", "Show track")
+            : tx("显示热力图", "Show heatmap"));
+    });
+    connect(m_clearHeatmapButton, &QPushButton::clicked,
+            this, &MainWindow::clearHeatmapData);
     m_mapView = new MapView(mapPage);
     m_mapView->setMinimumHeight(260);
     mapLayout->addWidget(m_mapInfoLabel);
     mapLayout->addWidget(m_livePositionLabel);
+    mapLayout->addLayout(heatmapControls);
+    mapLayout->addWidget(m_heatmapSummaryLabel);
     mapLayout->addWidget(m_mapView, 1);
     m_tabs->addTab(mapPage, QString());
 
@@ -280,6 +320,12 @@ void MainWindow::retranslateUi()
         : tx("实时置信度", "Live confidence"));
     m_clearTrackAction->setText(tx("清除轨迹", "Clear track"));
     m_exportSamplesAction->setText(tx("导出采样", "Export samples"));
+    m_importHeatmapButton->setText(tx("导入采样 CSV", "Import sample CSV"));
+    m_toggleHeatmapButton->setText(m_toggleHeatmapButton->isChecked()
+        ? tx("显示轨迹", "Show track")
+        : tx("显示热力图", "Show heatmap"));
+    m_clearHeatmapButton->setText(tx("清除热力图", "Clear heatmap"));
+    updateHeatmapSummary();
     m_uploadAction->setText(tx("仅上传", "Upload only"));
     m_uploadSwitchAction->setText(tx("上传、验证并切换", "Upload, verify and switch"));
     m_languageLabel->setText(tx("语言：", "Language: "));
@@ -835,6 +881,137 @@ void MainWindow::exportSamplingCsv()
     QMessageBox::information(this, tx("导出完成", "Export complete"), fileName);
 }
 
+void MainWindow::importHeatmapCsv()
+{
+    if (!m_mapView->hasMap() || m_mapSummary.name.trimmed().isEmpty()) {
+        QMessageBox::information(this, tx("请先打开地图", "Open a map first"),
+            tx("请先打开对应的机器人地图，再导入定位采样。",
+               "Open the matching robot map before importing localization samples."));
+        return;
+    }
+    const QStringList files = QFileDialog::getOpenFileNames(
+        this, tx("导入定位采样", "Import localization samples"),
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation),
+        tx("采样 CSV (*.csv)", "Sample CSV files (*.csv)"));
+    if (files.isEmpty()) return;
+
+    const int session = ++m_heatmapImportSession;
+    const QString mapName = m_mapSummary.name;
+    m_importHeatmapButton->setEnabled(false);
+    m_heatmapSummaryLabel->setText(tx("正在读取并汇总采样…",
+                                      "Reading and aggregating samples..."));
+    auto *watcher = new QFutureWatcher<HeatmapImportResult>(this);
+    connect(watcher, &QFutureWatcher<HeatmapImportResult>::finished,
+            this, [this, watcher, session] {
+        const HeatmapImportResult result = watcher->result();
+        watcher->deleteLater();
+        if (session != m_heatmapImportSession) return;
+        m_importHeatmapButton->setEnabled(true);
+        if (!result.error.isEmpty()) {
+            updateHeatmapSummary();
+            QMessageBox::warning(this, tx("导入失败", "Import failed"), result.error);
+            return;
+        }
+        if (result.cells.isEmpty()) {
+            updateHeatmapSummary();
+            QMessageBox::information(this, tx("没有移动样本", "No moving samples"),
+                tx("CSV 中没有符合条件的移动采样，无法生成热力图。",
+                   "The CSV contains no qualifying moving samples for a heatmap."));
+            return;
+        }
+
+        m_heatmapCells = result.cells;
+        m_heatmapRowCount = result.rows;
+        m_heatmapMovingSamples = result.movingSamples;
+        m_heatmapRejectedSamples = result.rejectedSamples;
+        m_heatmapFiles = result.files;
+        m_heatmapRobotName = result.robotName;
+        const int renderedCells = m_mapView->setHeatmapCells(m_heatmapCells);
+        if (renderedCells == 0) {
+            clearHeatmapData();
+            QMessageBox::warning(this, tx("无法显示热力图", "Cannot display heatmap"),
+                tx("采样坐标没有落在当前地图的可通行区域，请核对地图版本和坐标。",
+                   "The sample coordinates do not fall in free space on this map. "
+                   "Check the map version and coordinates."));
+            return;
+        }
+        m_toggleHeatmapButton->setEnabled(true);
+        m_toggleHeatmapButton->setChecked(true);
+        m_mapView->setHeatmapVisible(true);
+        m_mapView->setRobotTrackVisible(false);
+        m_clearHeatmapButton->setEnabled(true);
+        updateHeatmapSummary();
+    });
+    watcher->setFuture(QtConcurrent::run([files, mapName] {
+        LocalizationHeatmapBuilder builder;
+        HeatmapImportResult result;
+        for (const QString &file : files) {
+            if (!builder.addCsvFile(file, mapName, &result.error)) return result;
+        }
+        result.cells = builder.finish();
+        result.robotName = builder.robotName();
+        result.rows = builder.rowCount();
+        result.movingSamples = builder.movingSamples();
+        result.rejectedSamples = builder.rejectedSamples();
+        result.files = builder.fileCount();
+        return result;
+    }));
+}
+
+void MainWindow::clearHeatmapData()
+{
+    ++m_heatmapImportSession;
+    m_heatmapCells.clear();
+    m_heatmapRowCount = 0;
+    m_heatmapMovingSamples = 0;
+    m_heatmapRejectedSamples = 0;
+    m_heatmapFiles = 0;
+    m_heatmapRobotName.clear();
+    if (m_mapView) m_mapView->clearHeatmap();
+    if (m_mapView) m_mapView->setRobotTrackVisible(true);
+    if (m_toggleHeatmapButton) {
+        const QSignalBlocker blocker(m_toggleHeatmapButton);
+        m_toggleHeatmapButton->setChecked(false);
+        m_toggleHeatmapButton->setEnabled(false);
+        m_toggleHeatmapButton->setText(tx("显示热力图", "Show heatmap"));
+    }
+    if (m_clearHeatmapButton) m_clearHeatmapButton->setEnabled(false);
+    if (m_importHeatmapButton) m_importHeatmapButton->setEnabled(true);
+    updateHeatmapSummary();
+}
+
+void MainWindow::updateHeatmapSummary()
+{
+    if (!m_heatmapSummaryLabel) return;
+    if (m_heatmapCells.isEmpty()) {
+        m_heatmapSummaryLabel->setText(tx(
+            "导入同一机器人、同一地图的采样 CSV 后显示热力图。淡色表示只经过一次；空白表示未采样。地图名称相同也请核对版本。",
+            "Import sample CSV files from the same robot and map. Pale areas have one visit; blank areas have no samples. Verify the map revision even if its name matches."));
+        return;
+    }
+    int confirmed = 0;
+    int repeatedLow = 0;
+    for (const ConfidenceHeatmapCell &cell : m_heatmapCells) {
+        if (cell.visits < 2) continue;
+        ++confirmed;
+        if (cell.lowVisitRatio >= 0.6) ++repeatedLow;
+    }
+    m_heatmapSummaryLabel->setText(
+        tx("%1：%2 个 CSV，%3 条原始记录，%4 条移动采样；0.5 m 网格 %5 个，"
+           "重复经过 %6 个，重复低分 %7 个，剔除 %8 条。红<60%，黄60–80%，绿≥80%；淡色=一次经过。",
+           "%1: %2 CSV files, %3 raw rows, %4 moving samples; %5 cells at 0.5 m, "
+           "%6 revisited, %7 repeatedly low, %8 rejected. Red <60%, amber 60–80%, "
+           "green ≥80%; pale = one visit.")
+            .arg(m_heatmapRobotName)
+            .arg(m_heatmapFiles)
+            .arg(m_heatmapRowCount)
+            .arg(m_heatmapMovingSamples)
+            .arg(m_heatmapCells.size())
+            .arg(confirmed)
+            .arg(repeatedLow)
+            .arg(m_heatmapRejectedSamples));
+}
+
 void MainWindow::refreshSelected()
 {
     auto rows = selectedRows();
@@ -1082,6 +1259,7 @@ void MainWindow::downloadStoredMap(int row, const QString &storedFileName)
         if (m_mapView->loadBytes(result.payload, &summary, &previewError)) {
             m_mapSummary = summary;
             m_hasMapSummary = true;
+            clearHeatmapData();
             updateMapSummary();
             m_tabs->setCurrentIndex(0);
         } else {
@@ -1115,6 +1293,7 @@ void MainWindow::openMapFile()
     }
     m_mapSummary = summary;
     m_hasMapSummary = true;
+    clearHeatmapData();
     updateMapSummary();
     m_tabs->setCurrentIndex(0);
     log(tx("已打开地图：%1", "Opened map: %1").arg(fileName));

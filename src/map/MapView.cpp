@@ -17,6 +17,7 @@
 #include <QRectF>
 #include <QResizeEvent>
 #include <QScrollBar>
+#include <QSet>
 #include <QStyleOptionGraphicsItem>
 #include <QWheelEvent>
 #include <QVector>
@@ -210,6 +211,37 @@ private:
     bool m_hasPrevious = false;
 };
 
+class HeatmapGraphicsItem final : public QGraphicsItem {
+public:
+    struct Cell {
+        QRectF rect;
+        QColor color;
+    };
+
+    explicit HeatmapGraphicsItem(QVector<Cell> cells) : m_cells(std::move(cells))
+    {
+        for (const Cell &cell : m_cells) m_bounds |= cell.rect;
+        setFlag(QGraphicsItem::ItemUsesExtendedStyleOption, true);
+        setZValue(700.0);
+    }
+
+    QRectF boundingRect() const override { return m_bounds; }
+
+    void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *) override
+    {
+        const QRectF exposed = option ? option->exposedRect : m_bounds;
+        painter->setPen(Qt::NoPen);
+        for (const Cell &cell : m_cells) {
+            if (!cell.rect.intersects(exposed)) continue;
+            painter->fillRect(cell.rect, cell.color);
+        }
+    }
+
+private:
+    QVector<Cell> m_cells;
+    QRectF m_bounds;
+};
+
 class MapGraphicsItem final : public QGraphicsItem {
 public:
     explicit MapGraphicsItem(const QJsonObject &root, MapSummary *summary)
@@ -329,6 +361,42 @@ public:
 
     QRectF boundingRect() const override { return m_bounds; }
 
+    void prepareOccupancy()
+    {
+        if (m_occupancyReady) return;
+        for (auto it = m_pointBuckets.cbegin(); it != m_pointBuckets.cend(); ++it) {
+            for (const QPointF &point : it.value()) {
+                const int x = int(std::floor(point.x() / OccupancyCell));
+                const int y = int(std::floor(point.y() / OccupancyCell));
+                m_occupied.insert(gridKey(x, y));
+            }
+        }
+        m_occupancyReady = true;
+    }
+
+    bool occupiedNear(const QPointF &point) const
+    {
+        const int x = int(std::floor(point.x() / OccupancyCell));
+        const int y = int(std::floor(point.y() / OccupancyCell));
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                if (m_occupied.contains(gridKey(x + dx, y + dy))) return true;
+            }
+        }
+        return false;
+    }
+
+    bool blocksSegment(const QPointF &from, const QPointF &to) const
+    {
+        const double distance = QLineF(from, to).length();
+        const int steps = std::max(1, int(std::ceil(distance / (OccupancyCell * 0.5))));
+        for (int i = 0; i <= steps; ++i) {
+            const double t = double(i) / steps;
+            if (occupiedNear(from + (to - from) * t)) return true;
+        }
+        return false;
+    }
+
     void paint(QPainter *painter, const QStyleOptionGraphicsItem *option, QWidget *) override
     {
         const qreal lod = std::max<qreal>(0.001,
@@ -378,6 +446,7 @@ private:
     static constexpr int TilePixels = 256;
     static constexpr int MaximumCachedTiles = 256;
     static constexpr double MinimumPixelsPerMeter = 0.25;
+    static constexpr double OccupancyCell = 0.1;
 
     struct CachedTile {
         QPixmap pixmap;
@@ -538,6 +607,8 @@ private:
     QVector<QPolygonF> m_areas;
     QHash<quint64, QPolygonF> m_pointBuckets;
     QHash<quint64, CachedTile> m_tileCache;
+    QSet<quint64> m_occupied;
+    bool m_occupancyReady = false;
     double m_pixelsPerMeter = 20.0;
     double m_bucketWorldSize = 12.8;
     int m_maxTileLevel = 7;
@@ -579,8 +650,11 @@ bool MapView::loadBytes(const QByteArray &bytes, MapSummary *summary, QString *e
     item->setFlag(QGraphicsItem::ItemUsesExtendedStyleOption, true);
     m_robotPoseItem = nullptr;
     m_robotTrackItem = nullptr;
+    m_heatmapItem = nullptr;
+    m_mapItem = nullptr;
     m_scene->clear();
     m_scene->addItem(item);
+    m_mapItem = item;
     m_mapBounds = item->boundingRect();
     m_nativePixelsPerMeter = summary->resolution > 0.0
         ? std::clamp(2.0 / summary->resolution, 8.0, 160.0)
@@ -640,6 +714,7 @@ void MapView::appendRobotTrackSample(double x, double y, double confidence,
         item->setZValue(900.0);
         m_scene->addItem(item);
         m_robotTrackItem = item;
+        item->setVisible(m_trackVisible);
     }
     static_cast<RobotTrackItem *>(m_robotTrackItem)->append(
         QPointF(x, -y), confidence, anomaly, breakBefore);
@@ -653,10 +728,108 @@ void MapView::clearRobotTrack()
     m_robotTrackItem = nullptr;
 }
 
+void MapView::setRobotTrackVisible(bool visible)
+{
+    m_trackVisible = visible;
+    if (m_robotTrackItem) m_robotTrackItem->setVisible(visible);
+}
+
 bool MapView::containsMapPosition(double x, double y) const
 {
     return m_hasMap && std::isfinite(x) && std::isfinite(y)
         && m_mapBounds.contains(QPointF(x, -y));
+}
+
+int MapView::setHeatmapCells(const QVector<ConfidenceHeatmapCell> &cells)
+{
+    clearHeatmap();
+    if (!m_hasMap || !m_mapItem || cells.isEmpty()) return 0;
+
+    auto *map = static_cast<MapGraphicsItem *>(m_mapItem);
+    map->prepareOccupancy();
+    constexpr double displayCell = 0.25;
+    constexpr double radius = 0.75;
+    constexpr double sigma = 0.32;
+    struct Accumulator {
+        double weightedScore = 0.0;
+        double weight = 0.0;
+        int maxVisits = 0;
+    };
+    QHash<quint64, Accumulator> accumulated;
+    const auto keyFor = [](int x, int y) {
+        return (quint64(quint32(x)) << 32) | quint32(y);
+    };
+
+    for (const ConfidenceHeatmapCell &cell : cells) {
+        if (cell.visits <= 0) continue;
+        const QPointF source(cell.positionX, -cell.positionY);
+        if (!m_mapBounds.contains(source) || map->occupiedNear(source)) continue;
+        const int centerX = int(std::floor(source.x() / displayCell));
+        const int centerY = int(std::floor(source.y() / displayCell));
+        for (int dy = -3; dy <= 3; ++dy) {
+            for (int dx = -3; dx <= 3; ++dx) {
+                const int x = centerX + dx;
+                const int y = centerY + dy;
+                const QPointF target((x + 0.5) * displayCell, (y + 0.5) * displayCell);
+                const double distance = QLineF(source, target).length();
+                if (distance > radius || !m_mapBounds.contains(target)
+                    || map->blocksSegment(source, target)) continue;
+
+                const double visitWeight = std::sqrt(double(std::min(cell.visits, 4)));
+                const double weight = visitWeight
+                    * std::exp(-(distance * distance) / (2.0 * sigma * sigma));
+                Accumulator &acc = accumulated[keyFor(x, y)];
+                acc.weightedScore += cell.confidence * weight;
+                acc.weight += weight;
+                acc.maxVisits = std::max(acc.maxVisits, cell.visits);
+            }
+        }
+    }
+
+    QVector<HeatmapGraphicsItem::Cell> displayCells;
+    displayCells.reserve(accumulated.size());
+    for (auto it = accumulated.cbegin(); it != accumulated.cend(); ++it) {
+        const Accumulator &acc = it.value();
+        if (acc.weight <= 0.0) continue;
+        const double confidence = std::clamp(acc.weightedScore / acc.weight, 0.0, 1.0);
+        QColor color;
+        if (confidence < 0.6) {
+            color = QColor(220, 60, 55);
+        } else if (confidence < 0.8) {
+            const double t = (confidence - 0.6) / 0.2;
+            color = QColor(239, int(174 + 45 * t), int(29 + 20 * t));
+        } else {
+            const double t = std::min(1.0, (confidence - 0.8) / 0.2);
+            color = QColor(int(239 - 203 * t), int(219 - 55 * t),
+                           int(49 + 36 * t));
+        }
+        const double density = std::min(1.0, acc.weight);
+        color.setAlpha(int((acc.maxVisits >= 2 ? 150 : 65) * density));
+        const int x = qint32(it.key() >> 32);
+        const int y = qint32(it.key() & 0xffffffffu);
+        displayCells.append({QRectF(x * displayCell, y * displayCell,
+                                    displayCell, displayCell), color});
+    }
+
+    if (displayCells.isEmpty()) return 0;
+    const int displayCount = displayCells.size();
+    auto *item = new HeatmapGraphicsItem(std::move(displayCells));
+    m_scene->addItem(item);
+    m_heatmapItem = item;
+    return displayCount;
+}
+
+void MapView::clearHeatmap()
+{
+    if (!m_heatmapItem) return;
+    m_scene->removeItem(m_heatmapItem);
+    delete m_heatmapItem;
+    m_heatmapItem = nullptr;
+}
+
+void MapView::setHeatmapVisible(bool visible)
+{
+    if (m_heatmapItem) m_heatmapItem->setVisible(visible);
 }
 
 void MapView::wheelEvent(QWheelEvent *event)
