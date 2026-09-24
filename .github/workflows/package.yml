@@ -137,6 +137,7 @@ jobs:
       - name: Create or update GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: HenryZhu-svi/amr_map_change_one_click
         shell: bash
         run: |
           set -euo pipefail
